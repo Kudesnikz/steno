@@ -1,5 +1,6 @@
 dist
 .kilocode
 .DS_Store
-Steno.dmg
+*.dmg
 build/
+.venv*
