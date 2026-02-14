@@ -4,3 +4,4 @@ dist
 *.dmg
 build/
 .venv*
+bin/ffmpeg

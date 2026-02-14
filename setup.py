@@ -19,10 +19,6 @@ DATA_FILES = [
     ]),
 ]
 
-# Проверяем наличие ffmpeg
-if os.path.exists('bin/ffmpeg'):
-    DATA_FILES.append(('bin', ['bin/ffmpeg']))
-
 OPTIONS = {
     'argv_emulation': True,
     'plist': {
