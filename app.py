@@ -20,6 +20,7 @@ from google.genai import types
 from recorder import ScreenRecorder
 
 messageAuthor = 'v1.3'
+APP_BUNDLE_ID = "com.sergeygalay.steno"
 
 # --- macOS Permission & Native Capture Imports ---
 try:
@@ -36,7 +37,7 @@ try:
     from ApplicationServices import AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt
     from UserNotifications import UNUserNotificationCenter, UNAuthorizationOptionAlert, UNAuthorizationOptionSound, UNAuthorizationOptionBadge
     from AppKit import NSMenu
-    from Foundation import NSObject, NSURL, NSRunLoop, NSDate
+    from Foundation import NSObject, NSURL, NSRunLoop, NSDate, NSBundle
     HAS_PYOBJC = True
 except ImportError as e:
     print(f"PyObjC import error: {e}")
@@ -461,6 +462,8 @@ class RecorderApp(rumps.App):
         self.menu["Settings"].add(self.model_menu)
         self.menu["Settings"].add(rumps.MenuItem("Edit System Prompt...", callback=self.edit_prompt))
         self.menu["Settings"].add(rumps.MenuItem("Set API Key...", callback=self.set_api_key))
+        self.menu["Settings"].add(rumps.MenuItem("Reset Permissions (All)", callback=self.reset_permissions))
+        self.menu["Settings"].add(rumps.MenuItem("Reset Permissions + Restart", callback=self.reset_permissions_and_restart))
         
         self.menu["Settings"].add(None)
         
@@ -516,6 +519,67 @@ class RecorderApp(rumps.App):
         if r.clicked:
             self.config["api_key"] = r.text.strip()
             ConfigManager.save(self.config)
+
+    def reset_permissions(self, _):
+        try:
+            result = subprocess.run(
+                ["tccutil", "reset", "All", APP_BUNDLE_ID],
+                capture_output=True,
+                text=True
+            )
+            if result.returncode != 0:
+                details = (result.stderr or result.stdout or "Unknown error").strip()
+                rumps.alert(
+                    "Reset Failed",
+                    f"Не удалось сбросить разрешения.\n\n{details}"
+                )
+                return
+
+            # Opens the exact privacy pane so the user can re-enable screen access immediately.
+            subprocess.call(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"])
+            rumps.alert(
+                "Permission Reset",
+                "Все разрешения для Steno сброшены (включая Screen Recording и Microphone).\n"
+                "1. Закройте Steno.\n"
+                "2. Запустите снова только из /Applications.\n"
+                "3. Нажмите Start Recording и выдайте доступы заново."
+            )
+        except Exception as e:
+            rumps.alert("Reset Failed", f"Ошибка при сбросе разрешений: {e}")
+
+    def reset_permissions_and_restart(self, _):
+        try:
+            result = subprocess.run(
+                ["tccutil", "reset", "All", APP_BUNDLE_ID],
+                capture_output=True,
+                text=True
+            )
+            if result.returncode != 0:
+                details = (result.stderr or result.stdout or "Unknown error").strip()
+                rumps.alert(
+                    "Reset Failed",
+                    f"Не удалось сбросить разрешения.\n\n{details}"
+                )
+                return
+
+            bundle_path = None
+            if HAS_PYOBJC:
+                try:
+                    bundle_path = NSBundle.mainBundle().bundlePath()
+                except Exception:
+                    bundle_path = None
+
+            if bundle_path and os.path.exists(bundle_path):
+                subprocess.Popen(["open", "-n", bundle_path])
+                rumps.quit_application()
+            else:
+                rumps.alert(
+                    "Permissions Reset",
+                    "Разрешения сброшены, но путь к .app не найден.\n"
+                    "Перезапустите приложение вручную из /Applications."
+                )
+        except Exception as e:
+            rumps.alert("Reset Failed", f"Ошибка при сбросе разрешений: {e}")
             
     def open_folder(self, _):
         subprocess.call(["open", self.config["save_dir"]])
