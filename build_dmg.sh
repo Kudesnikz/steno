@@ -1,10 +1,11 @@
 #!/bin/bash
+set -euo pipefail
 
 # Настройки путей
-APP_NAME="Steno"
-APP_PATH="dist/${APP_NAME}.app"
-DMG_NAME="${APP_NAME}.dmg"
-BACKGROUND_PATH="assets/install.tiff"
+APP_NAME="${APP_NAME:-Steno}"
+APP_PATH="${APP_PATH:-dist/${APP_NAME}.app}"
+DMG_NAME="${DMG_NAME:-${APP_NAME}.dmg}"
+BACKGROUND_PATH="${BACKGROUND_PATH:-assets/install.tiff}"
 
 echo "--- Начинаем сборку $APP_NAME ---"
 
