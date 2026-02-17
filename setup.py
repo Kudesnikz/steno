@@ -8,7 +8,7 @@ Usage:
 from setuptools import setup
 import os
 
-APP = ['app.py']
+APP = ['qt_app.py']
 DATA_FILES = [
     ('assets', [
         'assets/icon_idle.png',
@@ -30,12 +30,12 @@ OPTIONS = {
         'CFBundleName': "Steno",
         'CFBundleDisplayName': "Steno",
         'CFBundleIdentifier': "com.sergeygalay.steno",
-        'CFBundleVersion': "0.1.0",
-        'CFBundleShortVersionString': "0.1.0",
+        'CFBundleVersion': "0.2.0",
+        'CFBundleShortVersionString': "0.2.0",
         'NSMicrophoneUsageDescription': "Приложение записывает звук микрофона во время встреч.",
         'NSScreenCaptureUsageDescription': "Приложение записывает экран для сохранения видео встреч.",
     },
-    'packages': ['rumps', 'certifi', 'objc', 'AVFoundation', 'Quartz', 'ApplicationServices', 'AppKit', 'Foundation'],
+    'packages': ['PyQt6', 'certifi', 'objc', 'AVFoundation', 'Quartz', 'CoreMedia', 'ScreenCaptureKit', 'ApplicationServices', 'AppKit', 'Foundation'],
     'includes': ['google.genai'],
     'iconfile': 'assets/app_icon.icns.icns',
 }
