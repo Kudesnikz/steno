@@ -8,7 +8,7 @@ Usage:
 from setuptools import setup
 import os
 
-APP = ['qt_app.py']
+APP = ['app.py']
 DATA_FILES = [
     ('assets', [
         'assets/icon_idle.png',
@@ -35,7 +35,7 @@ OPTIONS = {
         'NSMicrophoneUsageDescription': "Приложение записывает звук микрофона во время встреч.",
         'NSScreenCaptureUsageDescription': "Приложение записывает экран для сохранения видео встреч.",
     },
-    'packages': ['PyQt6', 'certifi', 'objc', 'AVFoundation', 'Quartz', 'CoreMedia', 'ScreenCaptureKit', 'ApplicationServices', 'AppKit', 'Foundation'],
+    'packages': ['PyQt6', 'certifi', 'objc', 'AVFoundation', 'Quartz', 'CoreMedia', 'ScreenCaptureKit', 'ApplicationServices', 'AppKit', 'Foundation', 'qtawesome', 'markdown', 'app', 'sounddevice', 'numpy'],
     'includes': ['google.genai'],
     'iconfile': 'assets/app_icon.icns.icns',
 }
