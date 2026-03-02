@@ -8,7 +8,13 @@ Usage:
 from setuptools import setup
 import os
 
-APP = ['app.py']
+# Получаем версию из app/__version__.py
+version = {}
+with open(os.path.join("app", "__version__.py")) as f:
+    exec(f.read(), version)
+APP_VERSION = version["__version__"]
+
+APP = ['main.py']
 DATA_FILES = [
     ('assets', [
         'assets/icon_idle.png',
@@ -30,8 +36,8 @@ OPTIONS = {
         'CFBundleName': "Steno",
         'CFBundleDisplayName': "Steno",
         'CFBundleIdentifier': "com.sergeygalay.steno",
-        'CFBundleVersion': "0.2.0",
-        'CFBundleShortVersionString': "0.2.0",
+        'CFBundleVersion': APP_VERSION,
+        'CFBundleShortVersionString': APP_VERSION,
         'NSMicrophoneUsageDescription': "Приложение записывает звук микрофона во время встреч.",
         'NSScreenCaptureUsageDescription': "Приложение записывает экран для сохранения видео встреч.",
     },

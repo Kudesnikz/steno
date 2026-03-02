@@ -1,0 +1,16 @@
+PyQt6
+qtawesome
+google-genai
+certifi
+markdown
+sounddevice
+numpy
+py2app
+pyobjc-core
+pyobjc-framework-Cocoa
+pyobjc-framework-AVFoundation
+pyobjc-framework-Quartz
+pyobjc-framework-ApplicationServices
+pyobjc-framework-CoreMedia
+pyobjc-framework-ScreenCaptureKit
+pyobjc-framework-UserNotifications
