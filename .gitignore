@@ -3,3 +3,10 @@ dist
 .DS_Store
 Steno.dmg
 build/
+__pycache__/
+.venv/
+.venv_test/
+venv/
+.agents/
+*.pyc
+.env

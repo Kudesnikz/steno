@@ -1,5 +1,8 @@
 import os
 import json
+import logging
+
+logger = logging.getLogger("Steno.Config")
 
 CONFIG_DIR = os.path.expanduser("~/.steno")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
@@ -35,6 +38,19 @@ DEFAULT_CONFIG = {
     ]
 }
 
+VIDEO_QUALITY_PRESETS = {
+    "Low": {"width": 960, "height": 540, "fps": 5, "bitrate": 1000000},
+    "Medium": {"width": 1280, "height": 720, "fps": 10, "bitrate": 3000000},
+    "High": {"width": 1920, "height": 1080, "fps": 30, "bitrate": 8000000},
+    "Ultra": {"width": 2560, "height": 1440, "fps": 60, "bitrate": 25000000}
+}
+
+AI_MODELS = [
+    "gemini-2.0-pro-exp-02-05",
+    "gemini-2.0-flash-thinking-exp-01-21",
+    "gemini-2.0-flash"
+]
+
 class ConfigManager:
     @staticmethod
     def load():
@@ -47,7 +63,7 @@ class ConfigManager:
                 import shutil
                 shutil.move(OLD_CONFIG_FILE, CONFIG_FILE)
             except Exception as e:
-                print(f"Error migrating config file: {e}")
+                logger.error(f"Error migrating config file: {e}")
                 
         if os.path.exists(CONFIG_FILE):
             try:
@@ -68,7 +84,7 @@ class ConfigManager:
                     
                     config.update(loaded_config)
             except Exception as e:
-                print(f"Error loading config: {e}")
+                logger.error(f"Error loading config: {e}")
         return config
 
     @staticmethod
@@ -78,7 +94,7 @@ class ConfigManager:
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=4, ensure_ascii=False)
         except Exception as e:
-            print(f"Error saving config: {e}")
+            logger.error(f"Error saving config: {e}")
 
     @staticmethod
     def get_agent_by_id(config, agent_id):

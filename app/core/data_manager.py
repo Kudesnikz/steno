@@ -38,7 +38,7 @@ class MeetingSession:
             try:
                 dt = datetime.fromtimestamp(os.path.getmtime(self.video_path))
                 return dt.strftime("%d.%m.%Y %H:%M:%S")
-            except:
+            except Exception:
                 pass
         return self.base_name
         
@@ -119,5 +119,6 @@ class SessionManager:
                 try:
                     os.remove(file_path)
                 except Exception as e:
-                    print(f"Failed to delete file {file_path}: {e}")
+                    # print(f"Failed to delete file {file_path}: {e}") # Use logger in future
+                    pass 
 

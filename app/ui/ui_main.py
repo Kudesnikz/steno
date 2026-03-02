@@ -1,6 +1,4 @@
-import os
-import markdown
-import qtawesome as qta
+import logging
 from PyQt6.QtWidgets import (
     QMainWindow, QToolBar, QWidget, QSplitter, QListWidget, QStackedWidget, 
     QSizePolicy, QComboBox, QTextBrowser, QVBoxLayout, QHBoxLayout, QListWidgetItem,
@@ -8,10 +6,13 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QEvent, QSize
 from PyQt6.QtGui import QColor, QAction
+import qtawesome as qta
 
 from app.core.data_manager import SessionManager
 from app.core.config import ConfigManager
 from app.ui.ui_player import PlayerWidget
+
+logger = logging.getLogger("Steno.MainWindow")
 
 class SessionItemWidget(QWidget):
     delete_confirmed = pyqtSignal(object)
@@ -205,7 +206,7 @@ class MainWindow(QMainWindow):
                 # Разрешаем перетаскивание окна за любую пустую область
                 ns_window.setMovableByWindowBackground_(True)
         except Exception as e:
-            print(f"Failed to set modern macOS toolbar style: {e}")
+            logger.warning(f"Failed to set modern macOS toolbar style: {e}")
 
 
     def resizeEvent(self, event):

@@ -12,7 +12,7 @@ from PyQt6.QtGui import QIcon, QFont
 from PyQt6.QtCore import QTimer, QObject
 
 # --- Модули приложения ---
-from app.core.config import ConfigManager, CONFIG_FILE
+from app.core.config import ConfigManager, CONFIG_FILE, VIDEO_QUALITY_PRESETS
 from app.core.ai_worker import AIWorker
 from app.ui.ui_main import MainWindow
 from app.ui.ui_settings import SettingsDialog
@@ -49,13 +49,6 @@ ICON_IDLE = os.path.join(ASSETS_DIR, "icon_idle.png")
 ICON_RECORDING = os.path.join(ASSETS_DIR, "icon_recording.png")
 ICON_PROCESSING = os.path.join(ASSETS_DIR, "icon_processing.png")
 ICON_ERROR = os.path.join(ASSETS_DIR, "icon_error.png")
-
-VIDEO_QUALITY_PRESETS = {
-    "Low": {"width": 960, "height": 540, "fps": 5, "bitrate": 1000000},
-    "Medium": {"width": 1280, "height": 720, "fps": 10, "bitrate": 3000000},
-    "High": {"width": 1920, "height": 1080, "fps": 30, "bitrate": 8000000},
-    "Ultra": {"width": 2560, "height": 1440, "fps": 60, "bitrate": 25000000}
-}
 
 
 class MeetAssistantApp(QObject):
@@ -169,20 +162,23 @@ class MeetAssistantApp(QObject):
                     logger.error(f"Recorder start failed: {error}")
                     QTimer.singleShot(0, self.stop_recording)
                     QTimer.singleShot(0, lambda: self.tray_manager.show_message("Error", f"Failed to start: {error}"))
+                else:
+                    self.is_recording = True
+                    self.recording_time = 0
+                    
+                    show_recording_time = self.config.get("show_recording_time", True)
+                    # UI updates must be done on main thread
+                    QTimer.singleShot(0, lambda: self.tray_manager.set_recording_state(True, show_recording_time))
+                    
+                    if show_recording_time:
+                        QTimer.singleShot(0, self.update_tray_timer)
+                        QTimer.singleShot(0, lambda: self.recording_timer.start(1000))
+                        
+                    QTimer.singleShot(0, lambda: self.main_window.set_recording_state(True))
+                    QTimer.singleShot(0, lambda: self.tray_manager.show_message("Recording Started", f"File: {os.path.basename(self.current_filename)}"))
             
             self.recorder.startWithCallback_(callback)
-            self.is_recording = True
-            self.recording_time = 0
-            
-            show_recording_time = self.config.get("show_recording_time", True)
-            self.tray_manager.set_recording_state(True, show_recording_time)
-            
-            if show_recording_time:
-                self.update_tray_timer()
-                self.recording_timer.start(1000)
-                
-            self.main_window.set_recording_state(True)
-            self.tray_manager.show_message("Recording Started", f"File: {os.path.basename(self.current_filename)}")
+            # self.is_recording = True  <-- Moved inside callback
             
         except Exception as e:
             logger.exception("Start recording error")
@@ -202,8 +198,7 @@ class MeetAssistantApp(QObject):
         self.main_window.set_recording_state(False)
         self.tray_manager.show_message("Recording Stopped", "Files saved.")
         
-        time.sleep(1)
-        self.main_window.refresh_data()
+        QTimer.singleShot(1000, self.main_window.refresh_data)
 
     def update_tray_timer(self):
         hours = self.recording_time // 3600
@@ -227,9 +222,15 @@ class MeetAssistantApp(QObject):
         self.worker.finished_signal.connect(self.on_processing_finished)
         self.worker.start()
 
-    def on_processing_finished(self, success, title, message, base_name, agent_id):
+    def on_processing_finished(self, success, title, message, base_name, agent_id, tokens_used):
         self.is_processing = False
         self.tray_manager.set_processing_state(False)
+        
+        if success and tokens_used > 0:
+             self.config["used_tokens"] = self.config.get("used_tokens", 0) + tokens_used
+             self.config["last_request_tokens"] = tokens_used
+             ConfigManager.save(self.config)
+             self.main_window.update_config(self.config) # Update UI with new token count
         
         if not success:
             self.tray_manager.set_error_state()
