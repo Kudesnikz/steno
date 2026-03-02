@@ -1,6 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
+cd "$(dirname "$0")/.."
+
 APP_NAME="${APP_NAME:-Steno}"
 if [ -z "${PYTHON_BIN+x}" ]; then
   PYTHON_BIN="python3"
@@ -10,7 +12,6 @@ else
 fi
 ARCH="${1:-arm64}"
 HOST_ARCH="$(uname -m)"
-REQUIRED_PY_PACKAGES="rumps google-genai certifi py2app pyobjc-core pyobjc-framework-Cocoa pyobjc-framework-AVFoundation pyobjc-framework-Quartz pyobjc-framework-ApplicationServices"
 
 case "$ARCH" in
   arm64|x86_64)
@@ -29,7 +30,7 @@ if [ "$PYTHON_BIN_IS_DEFAULT" -eq 1 ]; then
     python3 -m venv .venv
     . .venv/bin/activate
     python -m pip install -U pip
-    python -m pip install $REQUIRED_PY_PACKAGES
+    python -m pip install -r requirements.txt
     deactivate
     PYTHON_BIN=".venv/bin/python"
   elif [ "$ARCH" = "x86_64" ] && [ "$HOST_ARCH" = "arm64" ]; then
@@ -38,7 +39,7 @@ if [ "$PYTHON_BIN_IS_DEFAULT" -eq 1 ]; then
       rm -rf .venv-x86
     fi
     arch -x86_64 /usr/bin/python3 -m venv .venv-x86
-    arch -x86_64 zsh -lc ". .venv-x86/bin/activate && python -m pip install -U pip && python -m pip install $REQUIRED_PY_PACKAGES"
+    arch -x86_64 zsh -lc ". .venv-x86/bin/activate && python -m pip install -U pip && python -m pip install -r requirements.txt"
     PYTHON_BIN=".venv-x86/bin/python"
   fi
 fi
@@ -80,6 +81,6 @@ if [ ! -d "$APP_PATH" ]; then
 fi
 
 DMG_NAME="${DMG_NAME:-${APP_NAME}-${ARCH}.dmg}"
-APP_NAME="$APP_NAME" APP_PATH="$APP_PATH" DMG_NAME="$DMG_NAME" ./build_dmg.sh
+APP_NAME="$APP_NAME" APP_PATH="$APP_PATH" DMG_NAME="$DMG_NAME" ./scripts/build_dmg.sh
 
 echo "--- Готово: ${DMG_NAME} ---"

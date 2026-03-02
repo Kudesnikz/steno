@@ -1,6 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
+cd "$(dirname "$0")/.."
+
 # Настройки путей
 APP_NAME="${APP_NAME:-Steno}"
 APP_PATH="${APP_PATH:-dist/${APP_NAME}.app}"

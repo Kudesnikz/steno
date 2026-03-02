@@ -68,14 +68,16 @@ Steno — это десктопное приложение, написанное
 
 ### Структура проекта
 
-*   [`app.py`](app.py) — Точка входа в приложение, инициализация Tray и MainWindow.
-*   [`recorder.py`](recorder.py) — Мост к Objective-C/AVFoundation и ScreenCaptureKit для нативной записи экрана и звука без драйверов.
+*   [`main.py`](main.py) — Точка входа в приложение, инициализация Tray и MainWindow.
 *   [`setup.py`](setup.py) — Конфигурация для сборки приложения через `py2app`.
 *   [`app/core/`](app/core/) — Бизнес-логика:
     *   [`config.py`](app/core/config.py) — Управление настройками, моделями и агентами (загрузка/сохранение `~/.steno/config.json`).
     *   [`data_manager.py`](app/core/data_manager.py) — Сканирование файловой системы и группировка записей в сессии.
     *   [`ai_worker.py`](app/core/ai_worker.py) — QThread-воркер для фоновой работы с Google GenAI API (загрузка файлов и генерация).
+    *   [`recorder.py`](app/core/recorder.py) — Мост к Objective-C/AVFoundation и ScreenCaptureKit для нативной записи экрана и звука без драйверов.
+    *   [`permissions.py`](app/core/permissions.py) — Модуль для запроса системных разрешений macOS.
 *   [`app/ui/`](app/ui/) — Интерфейс (PyQt6):
+    *   [`tray.py`](app/ui/tray.py) — Логика системного трея (PyQt6 и нативный NSStatusBar).
     *   [`ui_main.py`](app/ui/ui_main.py) — Главное окно (тулбар, сплиттер, список сессий, Markdown-браузер).
     *   [`ui_onboarding.py`](app/ui/ui_onboarding.py) — Экран первичной настройки и запроса доступов (Permissions).
     *   [`ui_player.py`](app/ui/ui_player.py) — Встроенный видео-аудио плеер с кастомным движком на базе `ffmpeg` и микшером.
@@ -89,7 +91,7 @@ Steno — это десктопное приложение, написанное
 #### 1. Установка зависимостей
 Создайте виртуальное окружение и установите зависимости:
 ```bash
-pip install PyQt6 google-genai pyobjc certifi py2app qtawesome markdown qdarktheme sounddevice numpy
+pip install -r requirements.txt
 ```
 
 *(Обратите внимание: для работы плеера в папке `bin/` должен находиться исполняемый файл `ffmpeg`)*
@@ -104,10 +106,10 @@ python3 setup.py py2app
 *(Примечание: В процессе разработки вы можете использовать флаг `-A` (alias mode) для быстрой сборки симлинками: `python3 setup.py py2app -A`)*
 
 #### 3. Создание установочного `.dmg` образа
-Для создания удобного образа `.dmg` используется bash-скрипт `build_dmg.sh`. В системе должна быть установлена утилита `create-dmg` (устанавливается через Homebrew: `brew install create-dmg`).
+Для создания удобного образа `.dmg` используется bash-скрипт `build_dmg.sh` из папки `scripts`. В системе должна быть установлена утилита `create-dmg` (устанавливается через Homebrew: `brew install create-dmg`).
 
 ```bash
-./build_dmg.sh
+./scripts/build_dmg.sh
 ```
 Готовый образ появится в корне проекта.
 
