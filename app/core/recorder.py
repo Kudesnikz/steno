@@ -178,7 +178,8 @@ class ScreenRecorder(NSObject):
             try:
                 import dispatch
                 self.mic_queue = dispatch.dispatch_queue_create(b"mic_queue", dispatch.DISPATCH_QUEUE_SERIAL)
-            except: pass
+            except Exception as e:
+                logger.error(f"Failed to create mic queue: {e}")
 
             mic_out = AVCaptureAudioDataOutput.alloc().init()
             mic_out.setSampleBufferDelegate_queue_(self, self.mic_queue if self.mic_queue else None)
@@ -203,7 +204,8 @@ class ScreenRecorder(NSObject):
         try:
             import dispatch
             self.video_queue = dispatch.dispatch_queue_create(b"video_queue", dispatch.DISPATCH_QUEUE_SERIAL)
-        except:
+        except Exception as e:
+            logger.error(f"Failed to create video queue: {e}")
             self.video_queue = None
 
         # 0=Video, 1=Audio
@@ -235,21 +237,37 @@ class ScreenRecorder(NSObject):
         logger.info("ScreenRecorder: stop called")
         self.is_recording = False
         
-        if self.stream: self.stream.stopCaptureWithCompletionHandler_(lambda e: None)
-        if self.mic_session: self.mic_session.stopRunning()
+        try:
+            if self.stream: 
+                self.stream.stopCaptureWithCompletionHandler_(lambda e: None)
+        except Exception as e:
+            logger.error(f"Error stopping stream: {e}")
+
+        try:
+            if self.mic_session: 
+                self.mic_session.stopRunning()
+        except Exception as e:
+            logger.error(f"Error stopping mic session: {e}")
             
         # Маркируем инпуты как finished
-        if self.video_input: self.video_input.markAsFinished()
-        if self.mic_input: self.mic_input.markAsFinished()
-        if self.sys_input: self.sys_input.markAsFinished()
+        for inp in [self.video_input, self.mic_input, self.sys_input]:
+             if inp:
+                 try: inp.markAsFinished()
+                 except Exception as e: logger.error(f"Error marking input finished: {e}")
         
         # Закрываем Main Writer
         if self.main_writer:
-            self.main_writer.finishWritingWithCompletionHandler_(lambda: logger.info("Main Writer finished"))
+            try:
+                self.main_writer.finishWritingWithCompletionHandler_(lambda: logger.info("Main Writer finished"))
+            except Exception as e:
+                logger.error(f"Error finishing Main Writer: {e}")
             
         # Закрываем Aux Writer
         if self.aux_writer:
-            self.aux_writer.finishWritingWithCompletionHandler_(lambda: logger.info("Aux Audio Writer finished"))
+            try:
+                self.aux_writer.finishWritingWithCompletionHandler_(lambda: logger.info("Aux Audio Writer finished"))
+            except Exception as e:
+                logger.error(f"Error finishing Aux Writer: {e}")
 
     # --- Delegates ---
 

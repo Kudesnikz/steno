@@ -7,14 +7,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
-from app.core.config import ConfigManager
-
-VIDEO_QUALITY_PRESETS = ["Low", "Medium", "High", "Ultra"]
-AI_MODELS = [
-    "gemini-3-pro-preview",
-    "gemini-3-flash-preview",
-    "gemini-flash-lite-latest"
-]
+from app.core.config import ConfigManager, VIDEO_QUALITY_PRESETS, AI_MODELS
+from app.__version__ import __version__
 
 class SettingsDialog(QDialog):
     def __init__(self, config, parent=None):
@@ -182,7 +176,7 @@ class SettingsDialog(QDialog):
         
         v_layout = QVBoxLayout()
         self.quality_combo = QComboBox()
-        self.quality_combo.addItems(VIDEO_QUALITY_PRESETS)
+        self.quality_combo.addItems(list(VIDEO_QUALITY_PRESETS.keys()))
         self.quality_combo.setCurrentText(self.config.get("video_quality", "Medium"))
         v_layout.addWidget(QLabel("Качество видео:"))
         v_layout.addWidget(self.quality_combo)
@@ -209,7 +203,7 @@ class SettingsDialog(QDialog):
         info_layout = QVBoxLayout()
         info_layout.setSpacing(4)
         
-        version_label = QLabel("Версия приложения: 1.4")
+        version_label = QLabel(f"Версия приложения: {__version__}")
         version_label.setStyleSheet("color: #8e8e93; font-size: 11px;")
         info_layout.addWidget(version_label)
         

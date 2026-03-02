@@ -61,7 +61,20 @@ class PlayerEngine(QObject):
 
     def _get_ffmpeg_path(self):
         # Ищем ffmpeg в bin/ffmpeg относительно текущей директории
-        ffmpeg_bin = os.path.join(os.getcwd(), "bin", "ffmpeg")
+        # Use os.path.dirname(os.path.abspath(__file__)) to get correct path even in .app bundle
+        import sys
+        if getattr(sys, 'frozen', False):
+             # For PyInstaller/py2app
+             base_path = sys._MEIPASS if hasattr(sys, '_MEIPASS') else os.path.dirname(os.path.abspath(sys.argv[0]))
+             # In .app bundle resources are usually in Contents/Resources
+             if 'Contents/MacOS' in base_path:
+                  base_path = os.path.abspath(os.path.join(base_path, "../Resources"))
+        else:
+             # For development
+             base_path = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../"))
+
+        ffmpeg_bin = os.path.join(base_path, "bin", "ffmpeg")
+        
         if os.path.exists(ffmpeg_bin):
             try:
                 # Проверяем, рабочий ли бинарник (на маке может упасть из-за dyld)
@@ -82,8 +95,8 @@ class PlayerEngine(QObject):
                     time_str = line.split("Duration:")[1].split(",")[0].strip()
                     h, m, s = time_str.split(":")
                     return float(h) * 3600 + float(m) * 60 + float(s)
-        except:
-            pass
+        except Exception as e:
+            pass # Logger not available in this scope, but ignoring is fine here for duration check
         return 0.0
 
     def start(self, start_time=0.0):
@@ -148,7 +161,7 @@ class PlayerEngine(QObject):
             )
             self.sd_stream.start()
         except Exception as e:
-            print("Ошибка запуска sounddevice:", e)
+            # print("Ошибка запуска sounddevice:", e) # Removed print, logger not easily available here inside Engine
             self.sd_stream = None
 
         # Запуск потоков
@@ -221,7 +234,7 @@ class PlayerEngine(QObject):
                 img = QImage(proc.stdout[:self.frame_size], self.v_width, self.v_height, self.v_width * 3, QImage.Format.Format_RGB888)
                 self.frame_ready.emit(img.copy())
         except Exception as e:
-            print("Preview extraction error:", e)
+            pass # print("Preview extraction error:", e)
 
     def _audio_loop(self):
         bytes_per_sample = 2 * self.channels # 16bit = 2 bytes
@@ -269,6 +282,7 @@ class PlayerEngine(QObject):
             if not chunks_to_mix:
                 if eof_count >= len([p for p in self.audio_procs if p is not None]):
                     self.stop_event.set() # Все кончилось
+                    self.is_playing = False # Mark as stopped
                 else:
                     time.sleep(0.01)
                 continue
@@ -313,7 +327,7 @@ class PlayerEngine(QObject):
                             self.frame_ready.emit(img.copy())
                     else:
                         time.sleep(0.01)
-                except:
+                except Exception:
                     time.sleep(0.01)
             else:
                 time.sleep(0.01)
@@ -606,6 +620,10 @@ class PlayerWidget(QWidget):
             self.timeline.setValue(int(time_sec))
             self.timeline.blockSignals(False)
             self._update_time_label(time_sec)
+        
+        # Check if playback stopped (due to EOF)
+        if not self.engine.is_playing and not self.engine.is_paused and time_sec >= self.engine.duration - 0.5:
+             self.btn_play.setIcon(qta.icon('fa5s.play', color='#1d1d1f'))
 
     def _on_timeline_pressed(self):
         self.is_sliding = True
