@@ -24,7 +24,7 @@ class OnboardingDialog(QDialog):
         self.setWindowTitle("Добро пожаловать в Meet Assistant")
         self.setFixedSize(550, 480)
         self.setModal(True)
-        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.CustomizeWindowHint | Qt.WindowType.WindowTitleHint)
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.WindowCloseButtonHint | Qt.WindowType.WindowMinimizeButtonHint)
         
         self.config = copy.deepcopy(DEFAULT_CONFIG)
         

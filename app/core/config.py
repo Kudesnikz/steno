@@ -46,9 +46,10 @@ VIDEO_QUALITY_PRESETS = {
 }
 
 AI_MODELS = [
-    "gemini-2.0-pro-exp-02-05",
-    "gemini-2.0-flash-thinking-exp-01-21",
-    "gemini-2.0-flash"
+    "gemini-3-flash-preview",
+    "gemini-3.1-pro-preview",
+    "gemini-flash-latest",
+    "gemini-flash-lite-latest"
 ]
 
 class ConfigManager:

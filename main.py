@@ -9,10 +9,16 @@ from datetime import datetime
 
 from PyQt6.QtWidgets import QApplication, QMessageBox
 from PyQt6.QtGui import QIcon, QFont
-from PyQt6.QtCore import QTimer, QObject
+from PyQt6.QtCore import QTimer, QObject, pyqtSignal, Qt
 
 # --- Модули приложения ---
 from app.core.config import ConfigManager, CONFIG_FILE, VIDEO_QUALITY_PRESETS
+
+# --- Сигналы для связи нативных потоков с UI ---
+class RecordingSignals(QObject):
+    started = pyqtSignal()
+    failed = pyqtSignal(str)
+
 from app.core.ai_worker import AIWorker
 from app.ui.ui_main import MainWindow
 from app.ui.ui_settings import SettingsDialog
@@ -59,12 +65,17 @@ class MeetAssistantApp(QObject):
         
         self.is_recording = False
         self.is_processing = False
+        self.is_onboarding_active = False
         self.recorder = None
         self.current_filename = None
         self.recording_time = 0
         
         self.recording_timer = QTimer(self)
         self.recording_timer.timeout.connect(self.update_tray_timer)
+        
+        self.recording_signals = RecordingSignals()
+        self.recording_signals.started.connect(self._on_recording_started)
+        self.recording_signals.failed.connect(self._on_recording_failed)
         
         # Load Icons
         self.icons = {
@@ -80,6 +91,9 @@ class MeetAssistantApp(QObject):
         self.main_window.start_recording_signal.connect(self.start_recording)
         self.main_window.stop_recording_signal.connect(self.stop_recording)
         self.main_window.generate_signal.connect(self.start_generation)
+        
+        # Обработка закрытия главного окна
+        self.app.lastWindowClosed.connect(self.on_last_window_closed)
 
         # UI: Tray Manager
         self.tray_manager = SystemTrayManager(self, self.icons, self.config)
@@ -92,27 +106,76 @@ class MeetAssistantApp(QObject):
     def on_tray_activated(self, reason):
         pass
 
+    def on_last_window_closed(self):
+        if sys.platform == "darwin":
+            from AppKit import NSApp
+            NSApp.setActivationPolicy_(1) # NSApplicationActivationPolicyAccessory (только трей)
+
     def show_main_window(self):
         if not os.path.exists(CONFIG_FILE):
             self.show_onboarding()
         else:
+            if sys.platform == "darwin":
+                from AppKit import NSApp
+                NSApp.setActivationPolicy_(0) # NSApplicationActivationPolicyRegular
+                NSApp.activateIgnoringOtherApps_(True)
             self.main_window.showNormal()
             self.main_window.activateWindow()
+            self.main_window.raise_()
 
     def show_onboarding(self):
+        self.is_onboarding_active = True
+        self.tray_manager.set_onboarding_state(True)
+        
+        if sys.platform == "darwin":
+            from AppKit import NSApp
+            NSApp.setActivationPolicy_(0) # NSApplicationActivationPolicyRegular
+            NSApp.activateIgnoringOtherApps_(True)
+        
         from app.ui.ui_onboarding import OnboardingDialog
         dialog = OnboardingDialog()
+        dialog.activateWindow()
+        dialog.raise_()
         if dialog.exec():
+            self.is_onboarding_active = False
+            self.tray_manager.set_onboarding_state(False)
+            
             self.config = ConfigManager.load()
             self.main_window.update_config(self.config)
             self.show_main_window()
+        else:
+            self.quit_app()
 
     def open_settings(self):
-        dialog = SettingsDialog(self.config, self.main_window)
-        if dialog.exec():
-            self.config = dialog.get_updated_config()
+        if sys.platform == "darwin":
+            from AppKit import NSApp
+            NSApp.setActivationPolicy_(0) # NSApplicationActivationPolicyRegular
+            NSApp.activateIgnoringOtherApps_(True)
+
+        if hasattr(self, 'settings_dialog') and self.settings_dialog is not None and self.settings_dialog.isVisible():
+            self.settings_dialog.activateWindow()
+            self.settings_dialog.raise_()
+            return
+
+        self.settings_dialog = SettingsDialog(self.config, self.main_window)
+        # Устанавливаем окно модальным только для главного окна, чтобы трей не блокировался
+        self.settings_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+
+        def on_accepted():
+            self.config = self.settings_dialog.get_updated_config()
             ConfigManager.save(self.config)
             self.main_window.update_config(self.config)
+            self.settings_dialog = None
+
+        def on_rejected():
+            self.settings_dialog = None
+
+        self.settings_dialog.accepted.connect(on_accepted)
+        self.settings_dialog.rejected.connect(on_rejected)
+        
+        self.settings_dialog.show()
+        self.settings_dialog.activateWindow()
+        self.settings_dialog.raise_()
 
     def open_folder(self):
         subprocess.call(["open", self.config.get("save_dir", "")])
@@ -160,31 +223,35 @@ class MeetAssistantApp(QObject):
             def callback(success, error):
                 if not success:
                     logger.error(f"Recorder start failed: {error}")
-                    QTimer.singleShot(0, self.stop_recording)
-                    QTimer.singleShot(0, lambda: self.tray_manager.show_message("Error", f"Failed to start: {error}"))
+                    self.recording_signals.failed.emit(str(error))
                 else:
-                    self.is_recording = True
-                    self.recording_time = 0
-                    
-                    show_recording_time = self.config.get("show_recording_time", True)
-                    # UI updates must be done on main thread
-                    QTimer.singleShot(0, lambda: self.tray_manager.set_recording_state(True, show_recording_time))
-                    
-                    if show_recording_time:
-                        QTimer.singleShot(0, self.update_tray_timer)
-                        QTimer.singleShot(0, lambda: self.recording_timer.start(1000))
-                        
-                    QTimer.singleShot(0, lambda: self.main_window.set_recording_state(True))
-                    QTimer.singleShot(0, lambda: self.tray_manager.show_message("Recording Started", f"File: {os.path.basename(self.current_filename)}"))
+                    self.recording_signals.started.emit()
             
             self.recorder.startWithCallback_(callback)
-            # self.is_recording = True  <-- Moved inside callback
             
         except Exception as e:
             logger.exception("Start recording error")
-            self.tray_manager.show_message("Error", str(e))
-            self.recording_timer.stop()
-            self.tray_manager.set_error_state()
+            self._on_recording_failed(str(e))
+
+    def _on_recording_started(self):
+        self.is_recording = True
+        self.recording_time = 0
+        
+        show_recording_time = self.config.get("show_recording_time", True)
+        self.tray_manager.set_recording_state(True, show_recording_time)
+        
+        if show_recording_time:
+            self.update_tray_timer()
+            self.recording_timer.start(1000)
+            
+        self.main_window.set_recording_state(True)
+        self.tray_manager.show_message("Recording Started", f"File: {os.path.basename(self.current_filename)}")
+
+    def _on_recording_failed(self, error_str):
+        self.stop_recording()
+        self.tray_manager.show_message("Error", f"Failed to start: {error_str}")
+        self.recording_timer.stop()
+        self.tray_manager.set_error_state()
 
     def stop_recording(self):
         if self.recorder:
@@ -206,7 +273,7 @@ class MeetAssistantApp(QObject):
         seconds = self.recording_time % 60
         
         time_str = f" {hours:02d}:{minutes:02d}:{seconds:02d} "
-        self.tray_manager.set_timer_text(time_str)
+        QTimer.singleShot(0, lambda text=time_str: self.tray_manager.set_timer_text(text))
         
         self.recording_time += 1
 
@@ -217,6 +284,7 @@ class MeetAssistantApp(QObject):
             
         self.is_processing = True
         self.tray_manager.set_processing_state(True)
+        self.main_window.set_generating_state(True)
             
         self.worker = AIWorker(session_base_path, self.config, agent_id)
         self.worker.finished_signal.connect(self.on_processing_finished)
@@ -225,6 +293,7 @@ class MeetAssistantApp(QObject):
     def on_processing_finished(self, success, title, message, base_name, agent_id, tokens_used):
         self.is_processing = False
         self.tray_manager.set_processing_state(False)
+        self.main_window.set_generating_state(False)
         
         if success and tokens_used > 0:
              self.config["used_tokens"] = self.config.get("used_tokens", 0) + tokens_used

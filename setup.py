@@ -26,6 +26,10 @@ DATA_FILES = [
 ]
 
 # Проверяем наличие ffmpeg
+if os.path.exists('bin/ffmpeg_x86_64'):
+    DATA_FILES.append(('bin', ['bin/ffmpeg_x86_64']))
+if os.path.exists('bin/ffmpeg_arm64'):
+    DATA_FILES.append(('bin', ['bin/ffmpeg_arm64']))
 if os.path.exists('bin/ffmpeg'):
     DATA_FILES.append(('bin', ['bin/ffmpeg']))
 
@@ -41,8 +45,9 @@ OPTIONS = {
         'NSMicrophoneUsageDescription': "Приложение записывает звук микрофона во время встреч.",
         'NSScreenCaptureUsageDescription': "Приложение записывает экран для сохранения видео встреч.",
     },
-    'packages': ['PyQt6', 'certifi', 'objc', 'AVFoundation', 'Quartz', 'CoreMedia', 'ScreenCaptureKit', 'ApplicationServices', 'AppKit', 'Foundation', 'qtawesome', 'markdown', 'app', 'sounddevice', 'numpy'],
-    'includes': ['google.genai'],
+    'packages': ['PyQt6', 'certifi', 'objc', 'AVFoundation', 'Quartz', 'CoreMedia', 'ScreenCaptureKit', 'ApplicationServices', 'AppKit', 'Foundation', 'qtawesome', 'markdown', 'app', 'sounddevice', 'numpy', 'charset_normalizer'],
+    'includes': ['google.genai', 'html.parser'],
+    'excludes': ['tkinter', '_tkinter'],
     'iconfile': 'assets/app_icon.icns.icns',
 }
 

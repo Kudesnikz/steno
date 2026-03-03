@@ -14,3 +14,4 @@ pyobjc-framework-ApplicationServices==10.3.1
 pyobjc-framework-CoreMedia==10.3.1
 pyobjc-framework-ScreenCaptureKit==10.3.1
 pyobjc-framework-UserNotifications==10.3.1
+setuptools<70.0.0
