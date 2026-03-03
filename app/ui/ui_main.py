@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QEvent, QSize
 from PyQt6.QtGui import QColor, QAction
 import qtawesome as qta
+import markdown
 
 from app.core.data_manager import SessionManager
 from app.core.config import ConfigManager
@@ -394,6 +395,15 @@ class MainWindow(QMainWindow):
         else:
             self.record_btn.setIcon(qta.icon('fa5s.circle', color='#ff3b30'))
             self.record_btn.setText(" Record")
+
+    def set_generating_state(self, is_generating):
+        self.generate_btn.setEnabled(not is_generating)
+        if is_generating:
+            self.generate_btn.setIcon(qta.icon('fa5s.hourglass-half', color='gray'))
+            self.generate_btn.setText(" Обработка...")
+        else:
+            self.generate_btn.setIcon(qta.icon('fa5s.bolt', color='#f5a623'))
+            self.generate_btn.setText(" Generate")
 
     def toggle_recording(self):
         if self.is_recording:

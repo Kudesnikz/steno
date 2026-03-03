@@ -10,7 +10,7 @@ if [ -z "${PYTHON_BIN+x}" ]; then
 else
   PYTHON_BIN_IS_DEFAULT=0
 fi
-ARCH="${1:-arm64}"
+ARCH="${1:-x86_64}"
 HOST_ARCH="$(uname -m)"
 
 case "$ARCH" in
@@ -52,12 +52,18 @@ elif [ "$ARCH" = "x86_64" ]; then
 fi
 
 if [ -n "$FFMPEG_SOURCE" ]; then
+  if [ -f "$FFMPEG_SOURCE" ] && [ ! -x "$FFMPEG_SOURCE" ]; then
+    echo "Выдача прав на выполнение для $FFMPEG_SOURCE..."
+    chmod +x "$FFMPEG_SOURCE"
+  fi
+
   if [ ! -x "$FFMPEG_SOURCE" ]; then
-    echo "Ошибка: не найден исполняемый файл $FFMPEG_SOURCE"
+    echo "Ошибка: не найден или недоступен для выполнения файл $FFMPEG_SOURCE"
     exit 1
   fi
-  cp -f "$FFMPEG_SOURCE" bin/ffmpeg
-  chmod +x bin/ffmpeg
+  # Мы больше не копируем файл в bin/ffmpeg, так как setup.py сам подхватит нужный
+  # cp -f "$FFMPEG_SOURCE" bin/ffmpeg
+  # chmod +x bin/ffmpeg
   echo "Используем ffmpeg: $FFMPEG_SOURCE"
 fi
 

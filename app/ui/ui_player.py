@@ -63,6 +63,8 @@ class PlayerEngine(QObject):
         # Ищем ffmpeg в bin/ffmpeg относительно текущей директории
         # Use os.path.dirname(os.path.abspath(__file__)) to get correct path even in .app bundle
         import sys
+        import platform
+        
         if getattr(sys, 'frozen', False):
              # For PyInstaller/py2app
              base_path = sys._MEIPASS if hasattr(sys, '_MEIPASS') else os.path.dirname(os.path.abspath(sys.argv[0]))
@@ -73,8 +75,21 @@ class PlayerEngine(QObject):
              # For development
              base_path = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../"))
 
-        ffmpeg_bin = os.path.join(base_path, "bin", "ffmpeg")
+        # Определяем нужный бинарник в зависимости от архитектуры
+        arch = platform.machine().lower()
+        if arch in ('arm64', 'aarch64'):
+            ffmpeg_name = "ffmpeg_arm64"
+        else:
+            ffmpeg_name = "ffmpeg_x86_64"
+
+        ffmpeg_bin = os.path.join(base_path, "bin", ffmpeg_name)
         
+        # На случай если мы в собранном приложении и там только один переименованный ffmpeg
+        if not os.path.exists(ffmpeg_bin):
+            fallback_ffmpeg = os.path.join(base_path, "bin", "ffmpeg")
+            if os.path.exists(fallback_ffmpeg):
+                ffmpeg_bin = fallback_ffmpeg
+
         if os.path.exists(ffmpeg_bin):
             try:
                 # Проверяем, рабочий ли бинарник (на маке может упасть из-за dyld)
@@ -179,7 +194,7 @@ class PlayerEngine(QObject):
             try:
                 self.sd_stream.stop()
                 self.sd_stream.close()
-            except:
+            except Exception as e:
                 pass
             self.sd_stream = None
             
@@ -255,7 +270,7 @@ class PlayerEngine(QObject):
                     
                 try:
                     raw_data = proc.stdout.read(read_bytes)
-                except:
+                except Exception as e:
                     raw_data = b''
                     
                 if len(raw_data) < read_bytes:

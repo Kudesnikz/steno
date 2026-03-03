@@ -57,12 +57,12 @@ class SystemTrayManager:
         self.menu.addAction(self.recording_action)
 
         self.menu.addSeparator()
-        self.menu.addAction("Show UI", self.app.show_main_window)
-        self.menu.addAction("Settings...", self.app.open_settings)
+        self.ui_action = self.menu.addAction("Show UI", self.app.show_main_window)
+        self.settings_action = self.menu.addAction("Settings...", self.app.open_settings)
         self.menu.addSeparator()
-        self.menu.addAction("Open Output Folder", self.app.open_folder)
+        self.folder_action = self.menu.addAction("Open Output Folder", self.app.open_folder)
         self.menu.addSeparator()
-        self.menu.addAction("Quit", self.app.quit_app)
+        self.quit_action = self.menu.addAction("Quit", self.app.quit_app)
         
         self.tray.setContextMenu(self.menu)
         self.tray.activated.connect(self.app.on_tray_activated)
@@ -114,26 +114,35 @@ class SystemTrayManager:
         from AppKit import NSMenu, NSMenuItem
         
         ns_menu = NSMenu.alloc().init()
+        is_onboarding = getattr(self.app, 'is_onboarding_active', False)
         
         title = "Stop Recording" if getattr(self.app, 'is_recording', False) else "Start Recording"
         i_rec = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, "toggleRecording:", "")
         i_rec.setTarget_(self.mac_tray_helper)
+        if is_onboarding:
+            i_rec.setEnabled_(False)
         ns_menu.addItem_(i_rec)
         
         ns_menu.addItem_(NSMenuItem.separatorItem())
         
         i_ui = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Show UI", "showMainWindow:", "")
         i_ui.setTarget_(self.mac_tray_helper)
+        if is_onboarding:
+            i_ui.setEnabled_(False)
         ns_menu.addItem_(i_ui)
         
         i_set = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Settings...", "openSettings:", "")
         i_set.setTarget_(self.mac_tray_helper)
+        if is_onboarding:
+            i_set.setEnabled_(False)
         ns_menu.addItem_(i_set)
         
         ns_menu.addItem_(NSMenuItem.separatorItem())
         
         i_fld = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Open Output Folder", "openFolder:", "")
         i_fld.setTarget_(self.mac_tray_helper)
+        if is_onboarding:
+            i_fld.setEnabled_(False)
         ns_menu.addItem_(i_fld)
         
         ns_menu.addItem_(NSMenuItem.separatorItem())
@@ -143,6 +152,15 @@ class SystemTrayManager:
         ns_menu.addItem_(i_quit)
         
         self.timer_item.setMenu_(ns_menu)
+
+    def set_onboarding_state(self, is_onboarding):
+        self.recording_action.setEnabled(not is_onboarding)
+        self.ui_action.setEnabled(not is_onboarding)
+        self.settings_action.setEnabled(not is_onboarding)
+        self.folder_action.setEnabled(not is_onboarding)
+        
+        if HAS_PYOBJC:
+            self.update_native_menu()
 
     def set_recording_state(self, is_recording, show_recording_time=True):
         if HAS_PYOBJC:
