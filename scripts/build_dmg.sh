@@ -19,7 +19,13 @@ fi
 
 # 2. Ad-hoc подпись приложения
 echo "1. Подписываем приложение (Ad-hoc)..."
-codesign --force --deep -s - "$APP_PATH"
+# Сначала даем права на выполнение всем бинарникам внутри
+find "$APP_PATH" -type f -name "ffmpeg*" -exec chmod +x {} \;
+find "$APP_PATH" -type f -name "*.so" -exec chmod +x {} \;
+find "$APP_PATH" -type f -name "*.dylib" -exec chmod +x {} \;
+
+# Подписываем с Hardened Runtime (даже ad-hoc это лучше чем ничего)
+codesign --force --options runtime --deep -s - "$APP_PATH"
 
 # 3. Удаление старого DMG, если он существует
 if [ -f "$DMG_NAME" ]; then
@@ -29,6 +35,20 @@ fi
 
 # 4. Создание DMG при помощи create-dmg
 echo "2. Создаем установщик DMG..."
+
+# Создаем файл инструкции для пользователя внутри dist, чтобы он попал в DMG
+cat <<EOF > dist/ИНСТРУКЦИЯ_ПО_УСТАНОВКЕ.txt
+Если приложение "Steno.app" не открывается после копирования:
+
+1. Откройте программу "Терминал" (через Spotlight или в папке Программы/Утилиты).
+2. Скопируйте и вставьте туда следующую команду:
+   xattr -cr /Applications/Steno.app
+3. Нажмите Enter.
+
+После этого приложение запустится без ошибок.
+Это необходимо, так как приложение распространяется без платного сертификата Apple.
+EOF
+
 create-dmg \
   --volname "$APP_NAME" \
   --background "$BACKGROUND_PATH" \
