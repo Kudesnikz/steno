@@ -1,7 +1,7 @@
 dist
 .kilocode
 .DS_Store
-Steno.dmg
+*.dmg
 build/
 __pycache__/
 .venv/
