@@ -1,7 +1,6 @@
 # Steno — AI Meeting Assistant
 
 <div align="center">
-  <img src="assets/icon_recording.png" width="128" alt="Steno Logo"/>
   <h3>Ваш персональный секретарь для онлайн-встреч</h3>
   <br>
 
