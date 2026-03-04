@@ -4,7 +4,7 @@
   <h3>Ваш персональный секретарь для онлайн-встреч</h3>
   <br>
 
-  [![Скачать сборку (DMG)](https://img.shields.io/badge/📥_Скачать_Steno-DMG_Release-blue?style=for-the-badge)](https://github.com/sergeygalay/meetAssistant/releases/latest)
+  [![Скачать сборку (DMG)](https://img.shields.io/badge/📥_Скачать_Steno-DMG_Release-blue?style=for-the-badge)](https://github.com/Kudesnikz/steno/releases/latest)
 </div>
 
 ---
