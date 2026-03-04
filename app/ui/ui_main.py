@@ -369,6 +369,10 @@ class MainWindow(QMainWindow):
         wrapper_layout.addWidget(self.splitter)
         
         self.setCentralWidget(self.central_wrapper)
+        
+        # Убеждаемся, что тулбар находится поверх центрального виджета
+        if hasattr(self, 'toolbar_widget'):
+            self.toolbar_widget.raise_()
 
     def update_agents_combo(self):
         self.agent_combo.clear()

@@ -17,15 +17,18 @@ if [ ! -d "$APP_PATH" ]; then
     exit 1
 fi
 
-# 2. Ad-hoc подпись приложения
-echo "1. Подписываем приложение (Ad-hoc)..."
+# 2. Подпись приложения сертификатом Apple
+echo "1. Подписываем приложение сертификатом Apple..."
 # Сначала даем права на выполнение всем бинарникам внутри
 find "$APP_PATH" -type f -name "ffmpeg*" -exec chmod +x {} \;
 find "$APP_PATH" -type f -name "*.so" -exec chmod +x {} \;
 find "$APP_PATH" -type f -name "*.dylib" -exec chmod +x {} \;
 
-# Подписываем с Hardened Runtime (даже ad-hoc это лучше чем ничего)
-codesign --force --options runtime --deep -s - "$APP_PATH"
+# Имя сертификата (выдается Apple Developer)
+SIGN_IDENTITY="Mac Developer: Sergey Galay (UZR6A2N8MS)"
+
+# Подписываем с Hardened Runtime и нужными разрешениями (entitlements)
+codesign --force --options runtime --deep --sign "$SIGN_IDENTITY" --entitlements entitlements.plist "$APP_PATH"
 
 # 3. Удаление старого DMG, если он существует
 if [ -f "$DMG_NAME" ]; then
