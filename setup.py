@@ -34,7 +34,7 @@ if os.path.exists('bin/ffmpeg'):
     DATA_FILES.append(('bin', ['bin/ffmpeg']))
 
 OPTIONS = {
-    'argv_emulation': True,
+    'argv_emulation': False,
     'plist': {
         'LSUIElement': True,
         'CFBundleName': "Steno",
