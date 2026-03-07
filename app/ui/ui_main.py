@@ -12,6 +12,7 @@ import markdown
 from app.core.data_manager import SessionManager
 from app.core.config import ConfigManager
 from app.ui.ui_player import PlayerWidget
+from app.__version__ import __version__
 
 logger = logging.getLogger("Steno.MainWindow")
 
@@ -44,6 +45,12 @@ class SessionItemWidget(QWidget):
         self.text_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.text_label.setStyleSheet("color: #1d1d1f; font-size: 13px; font-weight: 500; background: transparent;")
         layout.addWidget(self.text_label)
+        
+        # Размер файлов
+        self.size_label = QLabel(f"{session.total_size_mb:.1f} MB")
+        self.size_label.setStyleSheet("color: rgba(29, 29, 31, 0.4); font-size: 11px; font-weight: 500; background: transparent;")
+        self.size_label.setContentsMargins(0, 0, 8, 0)
+        layout.addWidget(self.size_label)
         
         # Кнопка корзины (изначально видима)
         self.trash_btn = QPushButton()
@@ -109,23 +116,6 @@ class DraggableToolbar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self._drag_pos = None
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._drag_pos = event.globalPosition().toPoint()
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if self._drag_pos:
-            delta = event.globalPosition().toPoint() - self._drag_pos
-            self.parent().move(self.parent().pos() + delta)
-            self._drag_pos = event.globalPosition().toPoint()
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        self._drag_pos = None
-        super().mouseReleaseEvent(event)
 
 
 class MainWindow(QMainWindow):
@@ -146,8 +136,8 @@ class MainWindow(QMainWindow):
         # Перехватываем глобальные события мыши для отмены удаления
         QApplication.instance().installEventFilter(self)
         
-        self.setWindowFlag(Qt.WindowType.FramelessWindowHint)
-        self.setWindowTitle("")
+        # self.setWindowFlag(Qt.WindowType.FramelessWindowHint)
+        self.setWindowTitle(f"Steno")
         self.resize(900, 600)
         
         # Нативный тулбар в macOS
@@ -188,32 +178,7 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
-        # Настройка нативного тулбара macOS, чтобы он был на одном уровне со "светофором"
-        try:
-            import objc
-            from AppKit import NSView, NSWindowStyleMaskFullSizeContentView
-            win_id = int(self.winId())
-            ns_view = objc.objc_object(c_void_p=win_id)
-            ns_window = ns_view.window()
-            if ns_window:
-                # NSWindowToolbarStyleUnified = 3
-                if hasattr(ns_window, 'setToolbarStyle_'):
-                    ns_window.setToolbarStyle_(3)
-                ns_window.setTitlebarAppearsTransparent_(True)
-                # Позволяет контенту залезать под заголовок (необходимо для современного вида)
-                from AppKit import NSWindowStyleMaskTitled, NSWindowStyleMaskClosable, NSWindowStyleMaskMiniaturizable, NSWindowStyleMaskResizable
-                ns_window.setStyleMask_(ns_window.styleMask() | NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable | NSWindowStyleMaskFullSizeContentView)
-                ns_window.setTitleVisibility_(1)
-                # Разрешаем перетаскивание окна за любую пустую область
-                ns_window.setMovableByWindowBackground_(True)
-        except Exception as e:
-            logger.warning(f"Failed to set modern macOS toolbar style: {e}")
-
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if hasattr(self, 'toolbar_widget'):
-            self.toolbar_widget.setFixedWidth(self.width())
+        # Нативный тулбар и заголовок теперь управляются самой macOS.
 
     def setup_toolbar(self):
         # Используем DraggableToolbar для перетаскивания окна
@@ -225,7 +190,7 @@ class MainWindow(QMainWindow):
         
         self.toolbar_layout = QHBoxLayout(self.toolbar_widget)
         # Отступ слева 80px под светофор
-        self.toolbar_layout.setContentsMargins(80, 0, 16, 0)
+        self.toolbar_layout.setContentsMargins(5, 0, 16, 0)
         self.toolbar_layout.setSpacing(10)
         
         # Кнопка Record
@@ -236,6 +201,15 @@ class MainWindow(QMainWindow):
         self.toolbar_layout.addWidget(self.record_btn)
         
         # Центральный Spacer
+        self.toolbar_layout.addStretch()
+        
+        # Tokens Label
+        self.tokens_label = QLabel()
+        self.tokens_label.setStyleSheet("color: rgba(29, 29, 31, 0.4); font-size: 11px; font-weight: 500; background: transparent;")
+        self.update_tokens_label()
+        self.toolbar_layout.addWidget(self.tokens_label)
+        
+        # Второй Spacer для центрирования
         self.toolbar_layout.addStretch()
         
         # Агенты
@@ -362,17 +336,10 @@ class MainWindow(QMainWindow):
         wrapper_layout.setContentsMargins(0, 0, 0, 0)
         wrapper_layout.setSpacing(0)
         
-        # wrapper_layout.addWidget(self.toolbar_widget) # Тулбар теперь лежит поверх окна
-        
-        # Добавляем минимальный верхний отступ (был 28, уменьшаем чтобы не было "пустой строки")
-        wrapper_layout.setContentsMargins(0, 0, 0, 0)
+        wrapper_layout.addWidget(self.toolbar_widget) # Добавляем тулбар в макет, чтобы он не перекрывался
         wrapper_layout.addWidget(self.splitter)
         
         self.setCentralWidget(self.central_wrapper)
-        
-        # Убеждаемся, что тулбар находится поверх центрального виджета
-        if hasattr(self, 'toolbar_widget'):
-            self.toolbar_widget.raise_()
 
     def update_agents_combo(self):
         self.agent_combo.clear()
@@ -385,10 +352,21 @@ class MainWindow(QMainWindow):
         if idx >= 0:
             self.agent_combo.setCurrentIndex(idx)
 
+    def update_tokens_label(self):
+        total_tokens = self.config.get("used_tokens", 0)
+        last_tokens = self.config.get("last_request_tokens", 0)
+        
+        total_k = round(total_tokens / 1000)
+        last_k = round(last_tokens / 1000)
+        
+        text = f"Tokens: Total {total_k}k | Last {last_k}k"
+        self.tokens_label.setText(text)
+
     def update_config(self, new_config):
         self.config = new_config
         self.session_manager.save_dir = self.config.get("save_dir", "")
         self.update_agents_combo()
+        self.update_tokens_label()
         self.refresh_data()
 
     def set_recording_state(self, is_recording):

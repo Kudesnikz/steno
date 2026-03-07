@@ -6,32 +6,39 @@ from PyQt6.QtGui import QIcon, QAction
 logger = logging.getLogger("Steno.Tray")
 
 try:
+    import objc
     from AppKit import NSStatusBar, NSVariableStatusItemLength, NSImage, NSMenu, NSMenuItem
     from Foundation import NSObject
     
     class MacTrayHelper(NSObject):
         app_ref = None
         
+        @objc.IBAction
         def toggleRecording_(self, sender):
             if self.app_ref:
                 self.app_ref.toggle_recording()
                 
+        @objc.IBAction
         def stopRecording_(self, sender):
             if self.app_ref:
                 self.app_ref.stop_recording()
                 
+        @objc.IBAction
         def showMainWindow_(self, sender):
             if self.app_ref:
                 self.app_ref.show_main_window()
                 
+        @objc.IBAction
         def openSettings_(self, sender):
             if self.app_ref:
                 self.app_ref.open_settings()
                 
+        @objc.IBAction
         def openFolder_(self, sender):
             if self.app_ref:
                 self.app_ref.open_folder()
                 
+        @objc.IBAction
         def quitApp_(self, sender):
             if self.app_ref:
                 self.app_ref.quit_app()

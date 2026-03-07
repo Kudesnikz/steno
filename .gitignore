@@ -10,3 +10,5 @@ venv/
 .agents/
 *.pyc
 .env
+Steno-arm64.dmg
+Steno-x86_64.dmg

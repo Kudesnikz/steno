@@ -17,8 +17,12 @@ if [ ! -d "$APP_PATH" ]; then
     exit 1
 fi
 
-# 2. Подпись приложения сертификатом Apple
-echo "1. Подписываем приложение сертификатом Apple..."
+# 2. Подготовка и подпись приложения сертификатом Apple
+echo "1. Подготовка структуры и подпись приложения..."
+
+# Исправление структуры фреймворков (особенно для PyQt6)
+python3 scripts/fix_frameworks.py "$APP_PATH"
+
 # Сначала даем права на выполнение всем бинарникам внутри
 find "$APP_PATH" -type f -name "ffmpeg*" -exec chmod +x {} \;
 find "$APP_PATH" -type f -name "*.so" -exec chmod +x {} \;
@@ -27,8 +31,16 @@ find "$APP_PATH" -type f -name "*.dylib" -exec chmod +x {} \;
 # Имя сертификата (выдается Apple Developer)
 SIGN_IDENTITY="Mac Developer: Sergey Galay (UZR6A2N8MS)"
 
-# Подписываем с Hardened Runtime и нужными разрешениями (entitlements)
-codesign --force --options runtime --deep --sign "$SIGN_IDENTITY" --entitlements entitlements.plist "$APP_PATH"
+# Подписываем все внутренние компоненты (фреймворки, библиотеки, бинарники)
+echo "Подписываем внутренние компоненты..."
+find "$APP_PATH" -type d -name "*.framework" -exec codesign --force --options runtime --sign "$SIGN_IDENTITY" {} \;
+find "$APP_PATH" -type f -name "*.so" -exec codesign --force --options runtime --sign "$SIGN_IDENTITY" {} \;
+find "$APP_PATH" -type f -name "*.dylib" -exec codesign --force --options runtime --sign "$SIGN_IDENTITY" {} \;
+find "$APP_PATH" -type f -name "ffmpeg*" -exec codesign --force --options runtime --sign "$SIGN_IDENTITY" {} \;
+
+# Подписываем основной бандл с Hardened Runtime и нужными разрешениями (entitlements)
+echo "Подписываем основной бандл..."
+codesign --force --options runtime --sign "$SIGN_IDENTITY" --entitlements entitlements.plist "$APP_PATH"
 
 # 3. Удаление старого DMG, если он существует
 if [ -f "$DMG_NAME" ]; then

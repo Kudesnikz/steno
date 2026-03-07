@@ -41,6 +41,24 @@ class MeetingSession:
             except Exception:
                 pass
         return self.base_name
+
+    @property
+    def total_size_mb(self):
+        total_size = 0
+        try:
+            if self.has_video:
+                total_size += os.path.getsize(self.video_path)
+            if self.has_mic:
+                total_size += os.path.getsize(self.mic_path)
+            for af in self.audio_files:
+                if os.path.exists(af) and af != self.mic_path:
+                    total_size += os.path.getsize(af)
+            for pf in self.protocols.values():
+                if os.path.exists(pf):
+                    total_size += os.path.getsize(pf)
+        except Exception:
+            pass
+        return total_size / (1024 * 1024)
         
     def add_protocol(self, agent_id, filepath):
         self.protocols[agent_id] = filepath

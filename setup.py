@@ -45,7 +45,7 @@ OPTIONS = {
         'NSMicrophoneUsageDescription': "Приложение записывает звук микрофона во время встреч.",
         'NSScreenCaptureUsageDescription': "Приложение записывает экран для сохранения видео встреч.",
     },
-    'packages': ['PyQt6', 'certifi', 'objc', 'AVFoundation', 'Quartz', 'CoreMedia', 'ScreenCaptureKit', 'ApplicationServices', 'AppKit', 'Foundation', 'qtawesome', 'markdown', 'app', 'sounddevice', 'numpy', 'charset_normalizer'],
+    'packages': ['PyQt6', 'certifi', 'objc', 'AVFoundation', 'Quartz', 'CoreMedia', 'ScreenCaptureKit', 'ApplicationServices', 'AppKit', 'Foundation', 'qtawesome', 'markdown', 'app', 'sounddevice', '_sounddevice_data', 'numpy', 'charset_normalizer', 'chardet', 'dispatch'],
     'includes': ['google.genai', 'html.parser'],
     'excludes': ['tkinter', '_tkinter'],
     'iconfile': 'assets/app_icon.icns.icns',

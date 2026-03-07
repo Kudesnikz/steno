@@ -64,7 +64,7 @@ class AIWorker(QThread):
             if base_url:
                 if not base_url.startswith(("http://", "https://")):
                     base_url = "https://" + base_url
-                client_kwargs["http_options"] = {"baseUrl": base_url}
+                client_kwargs["http_options"] = {"base_url": base_url}
             
             client = genai.Client(**client_kwargs)
             
@@ -72,17 +72,17 @@ class AIWorker(QThread):
             uploaded_files = []
             for path in files_to_upload_paths:
                 logger.info(f"Uploading {os.path.basename(path)}...")
-                uploaded_files.append(client.files.upload(file=path))
+                uploaded_files.append(client.files.upload(path=path))
             
             # Ожидание
             ready_files = []
             for uf in uploaded_files:
                 logger.info(f"Waiting for processing: {uf.name}")
-                while uf.state.name == "PROCESSING":
+                while uf.state == "PROCESSING":
                     time.sleep(3)
                     uf = client.files.get(name=uf.name)
                 
-                if uf.state.name == "FAILED":
+                if uf.state == "FAILED":
                     raise Exception(f"Google failed to process file {uf.name}")
                 ready_files.append(uf)
             
@@ -96,13 +96,15 @@ class AIWorker(QThread):
             meeting_date = get_meeting_date(video_path)
             user_prompt = f"Составь протокол по прикрепленному файлу.\n\nДата встречи: {meeting_date}. Если тебе необходимо указывать имена участников - проверь правильность их написаня в разных частях видео. Очень важно чтоб имена были корректными. Отевт должен быть в формате Markdown, без дополнительных комментариев от себя."
             system_instruction = agent.get("prompt", "")
-            contents = ready_files + [user_prompt]
+            
+            # В новой версии SDK нужно конвертировать файлы в Part
+            file_parts = [types.Part.from_uri(file_uri=uf.uri, mime_type=uf.mime_type) for uf in ready_files]
+            contents = file_parts + [user_prompt]
             
             response = client.models.generate_content(
                 model=self.config.get("model_name"),
                 contents=contents,
                 config=types.GenerateContentConfig(
-                    http_options={"timeout": 600000},
                     system_instruction=system_instruction
                 )
             )
