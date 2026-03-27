@@ -55,7 +55,10 @@ AI_MODELS = [
 class ConfigManager:
     @staticmethod
     def load():
-        config = DEFAULT_CONFIG.copy()
+        # АРХ-7: используем deepcopy чтобы не мутировать вложенный список agents
+        # в DEFAULT_CONFIG через shallow copy
+        import copy as _copy
+        config = _copy.deepcopy(DEFAULT_CONFIG)
         
         # Миграция файла со старого пути на новый
         if not os.path.exists(CONFIG_FILE) and os.path.exists(OLD_CONFIG_FILE):

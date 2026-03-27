@@ -636,6 +636,8 @@ class MainWindow(QMainWindow):
         self.generate_signal.emit(session.base_path, agent_id)
 
     def closeEvent(self, event):
+        # УТ-1: снимаем глобальный фильтр событий перед закрытием
+        QApplication.instance().removeEventFilter(self)
         # Останавливаем плеер перед закрытием окна, если он запущен
         from app.ui.ui_player import PlayerWidget
         for i in range(self.stacked_widget.count()):

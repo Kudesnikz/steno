@@ -28,19 +28,22 @@ find "$APP_PATH" -type f -name "ffmpeg*" -exec chmod +x {} \;
 find "$APP_PATH" -type f -name "*.so" -exec chmod +x {} \;
 find "$APP_PATH" -type f -name "*.dylib" -exec chmod +x {} \;
 
-# Имя сертификата (выдается Apple Developer)
-SIGN_IDENTITY="Mac Developer: Sergey Galay (UZR6A2N8MS)"
+# СБ-3: Используем ad-hoc подпись вместо Mac Developer.
+# Mac Developer цертификат блокируется Gatekeeper на машинах пользователей.
+# Ad-hoc ("-") позволяет запуск после однократной разрешающей операции в настройках.
+# Для полнои дистрибуции — заменить на сертификат "Developer ID Application".
+SIGN_IDENTITY="-"
 
-# Подписываем все внутренние компоненты (фреймворки, библиотеки, бинарники)
+# Подписываем внутренние компоненты (фреймворки, библиотеки, бинарники)
 echo "Подписываем внутренние компоненты..."
-find "$APP_PATH" -type d -name "*.framework" -exec codesign --force --options runtime --sign "$SIGN_IDENTITY" {} \;
-find "$APP_PATH" -type f -name "*.so" -exec codesign --force --options runtime --sign "$SIGN_IDENTITY" {} \;
-find "$APP_PATH" -type f -name "*.dylib" -exec codesign --force --options runtime --sign "$SIGN_IDENTITY" {} \;
-find "$APP_PATH" -type f -name "ffmpeg*" -exec codesign --force --options runtime --sign "$SIGN_IDENTITY" {} \;
+find "$APP_PATH" -type d -name "*.framework" -exec codesign --force --sign "$SIGN_IDENTITY" {} \;
+find "$APP_PATH" -type f -name "*.so" -exec codesign --force --sign "$SIGN_IDENTITY" {} \;
+find "$APP_PATH" -type f -name "*.dylib" -exec codesign --force --sign "$SIGN_IDENTITY" {} \;
+find "$APP_PATH" -type f -name "ffmpeg*" -exec codesign --force --sign "$SIGN_IDENTITY" {} \;
 
-# Подписываем основной бандл с Hardened Runtime и нужными разрешениями (entitlements)
+# Подписываем основной бандл с entitlements
 echo "Подписываем основной бандл..."
-codesign --force --options runtime --sign "$SIGN_IDENTITY" --entitlements entitlements.plist "$APP_PATH"
+codesign --force --sign "$SIGN_IDENTITY" --entitlements entitlements.plist "$APP_PATH"
 
 # 3. Удаление старого DMG, если он существует
 if [ -f "$DMG_NAME" ]; then

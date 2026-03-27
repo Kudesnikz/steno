@@ -59,32 +59,32 @@ class PlayerEngine(QObject):
         # Аудио поток вывода
         self.sd_stream = None
 
+        # КРИТ-2: защита shared state (is_playing, is_paused, audio_time)
+        # от гонок данных между audio_thread / video_thread / UI-потоком
+        self._state_lock = threading.Lock()
+
+    # АРХ-3: кешируем путь на ffmpeg на уровне класса — проверка бинарника
+    # происходит один раз за жизнь через процесс, а не при каждом seek.
+    _ffmpeg_path_cache: str | None = None
+
     def _get_ffmpeg_path(self):
-        # Ищем ffmpeg в bin/ffmpeg относительно текущей директории
-        # Use os.path.dirname(os.path.abspath(__file__)) to get correct path even in .app bundle
+        if PlayerEngine._ffmpeg_path_cache is not None:
+            return PlayerEngine._ffmpeg_path_cache
+
         import sys
         import platform
         
         if getattr(sys, 'frozen', False):
-             # For PyInstaller/py2app
              base_path = sys._MEIPASS if hasattr(sys, '_MEIPASS') else os.path.dirname(os.path.abspath(sys.argv[0]))
-             # In .app bundle resources are usually in Contents/Resources
              if 'Contents/MacOS' in base_path:
                   base_path = os.path.abspath(os.path.join(base_path, "../Resources"))
         else:
-             # For development
              base_path = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../"))
 
-        # Определяем нужный бинарник в зависимости от архитектуры
         arch = platform.machine().lower()
-        if arch in ('arm64', 'aarch64'):
-            ffmpeg_name = "ffmpeg_arm64"
-        else:
-            ffmpeg_name = "ffmpeg_x86_64"
-
+        ffmpeg_name = "ffmpeg_arm64" if arch in ('arm64', 'aarch64') else "ffmpeg_x86_64"
         ffmpeg_bin = os.path.join(base_path, "bin", ffmpeg_name)
         
-        # На случай если мы в собранном приложении и там только один переименованный ffmpeg
         if not os.path.exists(ffmpeg_bin):
             fallback_ffmpeg = os.path.join(base_path, "bin", "ffmpeg")
             if os.path.exists(fallback_ffmpeg):
@@ -92,26 +92,51 @@ class PlayerEngine(QObject):
 
         if os.path.exists(ffmpeg_bin):
             try:
-                # Проверяем, рабочий ли бинарник (на маке может упасть из-за dyld)
                 subprocess.run([ffmpeg_bin, "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+                PlayerEngine._ffmpeg_path_cache = ffmpeg_bin
                 return ffmpeg_bin
             except Exception:
                 pass
-        return "ffmpeg" # fallback on system path
+
+        PlayerEngine._ffmpeg_path_cache = "ffmpeg"  # fallback на системный
+        return PlayerEngine._ffmpeg_path_cache
 
     def _get_duration(self, filepath):
+        """AРХ-9: используем ffprobe вместо ffmpeg -i — быстрее в 5-10х для больших файлов."""
         if not filepath or not os.path.exists(filepath):
             return 0.0
+        ffmpeg_bin = self._get_ffmpeg_path()
+        # ffprobe находится в той же bin/ что и ffmpeg
+        ffprobe_bin = ffmpeg_bin.replace("ffmpeg_arm64", "ffprobe_arm64") \
+                                .replace("ffmpeg_x86_64", "ffprobe_x86_64") \
+                                .replace("/ffmpeg", "/ffprobe")
+        if not os.path.exists(ffprobe_bin):
+            ffprobe_bin = "ffprobe"  # системный fallback
         try:
-            cmd = [self._get_ffmpeg_path(), "-i", filepath]
+            cmd = [
+                ffprobe_bin,
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                filepath,
+            ]
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            duration_str = result.stdout.strip()
+            if duration_str:
+                return float(duration_str)
+        except Exception:
+            pass
+        # Fallback: используем старый метод ffmpeg если ffprobe недоступен
+        try:
+            cmd = [ffmpeg_bin, "-i", filepath]
             out = subprocess.run(cmd, stderr=subprocess.PIPE, text=True)
             for line in out.stderr.split('\n'):
                 if "Duration:" in line:
                     time_str = line.split("Duration:")[1].split(",")[0].strip()
                     h, m, s = time_str.split(":")
                     return float(h) * 3600 + float(m) * 60 + float(s)
-        except Exception as e:
-            pass # Logger not available in this scope, but ignoring is fine here for duration check
+        except Exception:
+            pass
         return 0.0
 
     def start(self, start_time=0.0):
@@ -187,24 +212,28 @@ class PlayerEngine(QObject):
         self.video_thread.start()
 
     def stop(self):
-        self.is_playing = False
+        # КРИТ-2: сначала выставляем флаг, затем останавливаем процессы
+        with self._state_lock:
+            self.is_playing = False
         self.stop_event.set()
         
         if self.sd_stream:
             try:
                 self.sd_stream.stop()
                 self.sd_stream.close()
-            except Exception as e:
+            except Exception:
                 pass
             self.sd_stream = None
             
         if self.video_proc:
             self.video_proc.kill()
+            self.video_proc.wait()  # КРИТ-3: собираем zombie-процесс
             self.video_proc = None
             
         for proc in self.audio_procs:
             if proc:
                 proc.kill()
+                proc.wait()  # КРИТ-3: собираем zombie-процесс
         self.audio_procs.clear()
         
         if self.audio_thread and self.audio_thread.is_alive():
@@ -213,12 +242,18 @@ class PlayerEngine(QObject):
             self.video_thread.join(timeout=0.5)
 
     def toggle_pause(self):
-        if not self.is_playing:
+        with self._state_lock:  # КРИТ-2: Lock при чтении/записи is_paused
+            if not self.is_playing:
+                # start() вызываем вне lock, чтобы избежать deadlock
+                do_start = True
+            else:
+                self.is_paused = not self.is_paused
+                do_start = False
+                result = not self.is_paused
+        if do_start:
             self.start(self.audio_time)
-            return True # is playing now
-            
-        self.is_paused = not self.is_paused
-        return not self.is_paused # return true if playing
+            return True  # is playing now
+        return result  # True = играет, False = на паузе
 
     def seek(self, time_sec):
         # Чтобы сделать seek, нам нужно перезапустить процессы
@@ -463,10 +498,21 @@ class PlayerWidget(QWidget):
         self.engine.frame_ready.connect(self._update_frame)
         self.engine.time_updated.connect(self._update_time)
         
+        # УТ-2: гарантируем остановку engine при уничтожении виджета (в т.ч. через deleteLater).
+        # Освобождает sounddevice-поток, завершает ffmpeg-процессы.
+        self.destroyed.connect(self._on_destroyed)
+        
         self.setup_ui()
         
         # Извлекаем превью 0-й секунды
         QTimer.singleShot(100, lambda: self.engine.seek(0))
+
+    def _on_destroyed(self):
+        """Callback при уничтожении виджета."""
+        try:
+            self.engine.stop()
+        except Exception:
+            pass
 
     def setup_ui(self):
         main_layout = QVBoxLayout(self)

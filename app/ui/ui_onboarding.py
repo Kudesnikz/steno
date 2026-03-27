@@ -264,3 +264,13 @@ class OnboardingDialog(QDialog):
         self.config["api_key"] = self.api_input.text().strip()
         ConfigManager.save(self.config)
         self.accept()
+
+    def accept(self):
+        # АРХ-6: останавливаем polling-таймер при любом закрытии диалога
+        self.check_timer.stop()
+        super().accept()
+
+    def reject(self):
+        # АРХ-6: Escape / закрытие окна — тоже останавливаем таймер
+        self.check_timer.stop()
+        super().reject()

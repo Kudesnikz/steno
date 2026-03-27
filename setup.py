@@ -15,28 +15,43 @@ with open(os.path.join("app", "__version__.py")) as f:
 APP_VERSION = version["__version__"]
 
 APP = ['main.py']
+
 DATA_FILES = [
     ('assets', [
         'assets/icon_idle.png',
         'assets/icon_recording.png',
         'assets/icon_processing.png',
         'assets/icon_error.png',
-        'assets/app_icon.icns.icns'
+        'assets/app_icon.icns'  # СБ-1: убрано двойное расширение
     ]),
 ]
 
-# Проверяем наличие ffmpeg
-if os.path.exists('bin/ffmpeg_x86_64'):
-    DATA_FILES.append(('bin', ['bin/ffmpeg_x86_64']))
-if os.path.exists('bin/ffmpeg_arm64'):
-    DATA_FILES.append(('bin', ['bin/ffmpeg_arm64']))
-if os.path.exists('bin/ffmpeg'):
-    DATA_FILES.append(('bin', ['bin/ffmpeg']))
+# СБ-4: Включаем ТОЛЬКО ffmpeg нужной архитектуры.
+# Бандл упадёт с ошибкой при отсутствии, а не создаст плеер без бинарника.
+import platform
+_host_arch = platform.machine()  # 'arm64' или 'x86_64'
+_ffmpeg_candidates = {
+    'arm64':  'bin/ffmpeg_arm64',
+    'x86_64': 'bin/ffmpeg_x86_64',
+}
+_ffmpeg_path = _ffmpeg_candidates.get(_host_arch)
+if _ffmpeg_path is None or not os.path.exists(_ffmpeg_path):
+    _ffmpeg_fallback = 'bin/ffmpeg'
+    if os.path.exists(_ffmpeg_fallback):
+        _ffmpeg_path = _ffmpeg_fallback
+    else:
+        raise RuntimeError(
+            f"FATAL: ffmpeg для архитектуры '{_host_arch}' не найден.\n"
+            f"Ожидался файл: {_ffmpeg_path}\n"
+            "Сборка прервана."
+        )
+DATA_FILES.append(('bin', [_ffmpeg_path]))
 
 OPTIONS = {
     'argv_emulation': False,
     'plist': {
-        'LSUIElement': True,
+        # СБ-8: LSUIElement убран — политикой активации управляет main.py
+        # через NSApp.setActivationPolicy_() динамически
         'CFBundleName': "Steno",
         'CFBundleDisplayName': "Steno",
         'CFBundleIdentifier': "com.sergeygalay.steno",
@@ -44,11 +59,13 @@ OPTIONS = {
         'CFBundleShortVersionString': APP_VERSION,
         'NSMicrophoneUsageDescription': "Приложение записывает звук микрофона во время встреч.",
         'NSScreenCaptureUsageDescription': "Приложение записывает экран для сохранения видео встреч.",
+        'NSSupportsAutomaticTermination': False,
+        'NSSupportsSuddenTermination': False,
     },
     'packages': ['PyQt6', 'certifi', 'objc', 'AVFoundation', 'Quartz', 'CoreMedia', 'ScreenCaptureKit', 'ApplicationServices', 'AppKit', 'Foundation', 'qtawesome', 'markdown', 'app', 'sounddevice', '_sounddevice_data', 'numpy', 'charset_normalizer', 'chardet', 'dispatch'],
     'includes': ['google.genai', 'html.parser'],
     'excludes': ['tkinter', '_tkinter'],
-    'iconfile': 'assets/app_icon.icns.icns',
+    'iconfile': 'assets/app_icon.icns',  # СБ-1: правильное расширение
 }
 
 setup(

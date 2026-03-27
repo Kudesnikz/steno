@@ -103,6 +103,11 @@ class MeetAssistantApp(QObject):
         if not os.path.exists(CONFIG_FILE):
             QTimer.singleShot(100, self.show_onboarding)
 
+        # АРХ-5: перехватываем Cmd+Q / любой другой юнит завершения
+        # (QApplication.quit(), [NSApp terminate:] и т.д.) — сигнал отрабатывается
+        # в главном потоке до закрытия event-loopа.
+        self.app.aboutToQuit.connect(self._on_about_to_quit)
+
     def on_tray_activated(self, reason):
         pass
 
@@ -181,9 +186,24 @@ class MeetAssistantApp(QObject):
         subprocess.call(["open", self.config.get("save_dir", "")])
 
     def quit_app(self):
+        # Сигнал aboutToQuit вызовет _on_about_to_quit до закрытия
+        QApplication.quit()
+
+    def _on_about_to_quit(self):
+        """КРИТ-1 + АРХ-5: вызывается при любом способе выхода (quit_app, Cmd+Q, terminate).
+        Корректно останавливает запись и ждёт воркер до 5 секунд.
+        """
+        logger.info("_on_about_to_quit: начинаем корректное завершение")
         if self.is_recording:
             self.stop_recording()
-        QApplication.quit()
+        worker = getattr(self, 'worker', None)
+        if worker is not None and worker.isRunning():
+            logger.info("Ожидаем завершения AIWorker...")
+            worker.cancel()
+            if not worker.wait(5000):  # 5 секунд
+                logger.warning("AIWorker не завершился за 5 сек — принудительно завершаем")
+                worker.terminate()
+                worker.wait(1000)
 
     def toggle_recording(self):
         if self.is_recording:
@@ -248,9 +268,19 @@ class MeetAssistantApp(QObject):
         self.tray_manager.show_message("Recording Started", f"File: {os.path.basename(self.current_filename)}")
 
     def _on_recording_failed(self, error_str):
-        self.stop_recording()
-        self.tray_manager.show_message("Error", f"Failed to start: {error_str}")
+        # КРИТ-4: НЕ вызываем stop_recording() — рекордер в сломанном состоянии.
+        # Чистим состояние напрямую без "Files saved" нотификации.
+        if self.recorder:
+            try:
+                self.recorder.stop()
+            except Exception:
+                pass
+            self.recorder = None
+        self.is_recording = False
         self.recording_timer.stop()
+        self.tray_manager.set_recording_state(False)
+        self.main_window.set_recording_state(False)
+        self.tray_manager.show_message("Ошибка записи", f"Не удалось начать: {error_str[:120]}")
         self.tray_manager.set_error_state()
 
     def stop_recording(self):

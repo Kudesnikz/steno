@@ -54,6 +54,12 @@ if [ "$PYTHON_BIN_IS_DEFAULT" -eq 1 ]; then
   elif [ "$ARCH" = "x86_64" ]; then
     echo "Готовим x86_64 окружение (.venv-x86)..."
     if [ "$HOST_ARCH" = "arm64" ]; then
+      # СБ-5: Проверяем наличие Rosetta 2 — без неё arch -x86_64 не работает
+      if ! /usr/bin/arch -x86_64 true 2>/dev/null; then
+        echo "ОШИБКА: Rosetta 2 не установлена."
+        echo "Установите Rosetta: softwareupdate --install-rosetta --agree-to-license"
+        exit 1
+      fi
       if [ -x ".venv-x86/bin/python" ] && ! file .venv-x86/bin/python | grep -q "x86_64"; then
         rm -rf .venv-x86
       fi
@@ -112,8 +118,27 @@ if [ ! -d "$APP_PATH" ]; then
   exit 1
 fi
 
+# СБ-5: Верификация архитектуры итогового бинарника
+MAIN_BINARY="$APP_PATH/Contents/MacOS/${APP_NAME}"
+if [ -f "$MAIN_BINARY" ]; then
+  if ! file "$MAIN_BINARY" | grep -qi "$ARCH"; then
+    echo "ОШИБКА: Бинарник собран для неправильной архитектуры!"
+    file "$MAIN_BINARY"
+    exit 1
+  fi
+  echo "Архитектура бинарника проверена: OK (${ARCH})"
+fi
+
 DMG_NAME="${DMG_NAME:-${APP_NAME}-${ARCH}.dmg}"
 APP_NAME="$APP_NAME" APP_PATH="$APP_PATH" DMG_NAME="$DMG_NAME" ./scripts/build_dmg.sh
+DMG_EXIT_CODE=$?
+
+# СБ-9: Удаляем dist/ ТОЛЬКО при успешном DMG.
+# Если build_dmg.sh упал — бандл сохраняется в dist/ для отладки.
+if [ $DMG_EXIT_CODE -ne 0 ]; then
+  echo "Ошибка при создании DMG (код $DMG_EXIT_CODE).  .app-бандл сохранён в dist/ для отладки."
+  exit $DMG_EXIT_CODE
+fi
 
 echo "Очистка временных папок сборки (build, dist, egg-info)..."
 rm -rf build dist Steno.egg-info
