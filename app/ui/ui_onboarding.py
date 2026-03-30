@@ -247,10 +247,12 @@ class OnboardingDialog(QDialog):
         self._validate_form()
 
     def _open_screen_settings(self):
-        subprocess.call(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"])
+        # АРХ-14 fix: Popen вместо блокирующего call
+        subprocess.Popen(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"])
 
     def _open_mic_settings(self):
-        subprocess.call(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"])
+        # АРХ-14 fix: Popen вместо блокирующего call
+        subprocess.Popen(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"])
 
     def _validate_form(self):
         has_key = len(self.api_input.text().strip()) > 5

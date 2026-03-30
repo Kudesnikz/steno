@@ -205,3 +205,13 @@ class SystemTrayManager:
             
     def show_message(self, title, msg):
         self.tray.showMessage(title, msg)
+
+    def cleanup(self):
+        """УТ-2 fix: освобождаем NSStatusItem (парный release к retain)."""
+        if HAS_PYOBJC and self.timer_item:
+            try:
+                NSStatusBar.systemStatusBar().removeStatusItem_(self.timer_item)
+                self.timer_item.release()
+            except Exception:
+                pass
+            self.timer_item = None

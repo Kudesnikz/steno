@@ -1,5 +1,6 @@
 import os
 import re
+import json
 from datetime import datetime
 
 class MeetingSession:
@@ -10,12 +11,42 @@ class MeetingSession:
         # Основные файлы
         self.video_path = f"{base_path}.mp4"
         self.mic_path = f"{base_path}_mic.m4a"
+        self.json_path = f"{base_path}.json"
         
         # Динамический список аудиофайлов (m4a, mp3, wav, etc.)
         self.audio_files = []
         
         # Словарь протоколов вида { "agent_id": "путь_к_файлу" }
         self.protocols = {}
+        
+        self.custom_name = None
+        self._load_metadata()
+
+    def _load_metadata(self):
+        if os.path.exists(self.json_path):
+            try:
+                with open(self.json_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.custom_name = data.get("name")
+            except Exception:
+                pass
+
+    def rename(self, new_name):
+        self.custom_name = new_name
+        data = {}
+        if os.path.exists(self.json_path):
+            try:
+                with open(self.json_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            except Exception:
+                pass
+        
+        data["name"] = new_name
+        try:
+            with open(self.json_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+        except Exception:
+            pass
         
     @property
     def has_video(self):
@@ -28,6 +59,9 @@ class MeetingSession:
     
     @property
     def display_name(self):
+        if self.custom_name:
+            return self.custom_name
+            
         # Meet_24.06.2024_15:30:00 -> 24.06.2024 15:30:00
         match = re.search(r"Meet_(\d{2}\.\d{2}\.\d{4}_\d{2}:\d{2}:\d{2})", self.base_name)
         if match:

@@ -2,6 +2,7 @@ import os
 import time
 import re
 import logging
+import threading
 from datetime import datetime
 
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -47,12 +48,13 @@ class AIWorker(QThread):
         self.session_base_path = session_base_path
         self.config = config
         self.agent_id = agent_id
-        # КРИТ-1: флаг отмены — устанавливается из главного потока
-        self._is_cancelled = False
+        # КРИТ-2 fix: threading.Event вместо голого bool —
+        # гарантированный memory barrier при cross-thread доступе
+        self._cancel_event = threading.Event()
 
     def cancel(self) -> None:
         """Запрашивает корректное завершение воркера. Thread-safe."""
-        self._is_cancelled = True
+        self._cancel_event.set()
         logger.info("AIWorker: cancellation requested")
 
     def _sleep_cancellable(self, total_secs: float) -> bool:
@@ -63,7 +65,7 @@ class AIWorker(QThread):
         """
         steps = int(total_secs / _POLL_INTERVAL_SECS)
         for _ in range(steps):
-            if self._is_cancelled:
+            if self._cancel_event.is_set():
                 return False
             time.sleep(_POLL_INTERVAL_SECS)
         return True
@@ -86,7 +88,7 @@ class AIWorker(QThread):
                 return
 
             # КРИТ-1: проверяем cancel перед длинной операцией
-            if self._is_cancelled:
+            if self._cancel_event.is_set():
                 return
 
             video_path = f"{self.session_base_path}.mp4"
@@ -108,7 +110,7 @@ class AIWorker(QThread):
 
             # --- Загрузка файлов ---
             for path in files_to_upload_paths:
-                if self._is_cancelled:
+                if self._cancel_event.is_set():
                     return
                 logger.info(f"Uploading {os.path.basename(path)}...")
                 uploaded_files.append(client.files.upload(path=path))
@@ -128,7 +130,7 @@ class AIWorker(QThread):
                     raise Exception(f"Google failed to process file {uf.name}")
                 ready_files.append(uf)
 
-            if self._is_cancelled:
+            if self._cancel_event.is_set():
                 return
 
             # --- Поиск агента ---
@@ -156,7 +158,7 @@ class AIWorker(QThread):
             response = None
             last_error = None
             for attempt in range(_MAX_RETRIES):
-                if self._is_cancelled:
+                if self._cancel_event.is_set():
                     return
                 try:
                     response = client.models.generate_content(
@@ -205,9 +207,14 @@ class AIWorker(QThread):
             )
 
         except Exception as e:
-            logger.exception("AI Worker failed")
+            # АРХ-13 fix: маскируем API-ключ, чтобы он не попал в лог
+            error_msg = str(e)
+            api_key = self.config.get("api_key", "")
+            if api_key and len(api_key) > 4:
+                error_msg = error_msg.replace(api_key, "***MASKED***")
+            logger.error(f"AI Worker failed: {error_msg}")
             base_n = os.path.basename(self.session_base_path) if hasattr(self, "session_base_path") else ""
-            self.finished_signal.emit(False, "AI Ошибка", str(e)[:200], base_n, self.agent_id, 0)
+            self.finished_signal.emit(False, "AI Ошибка", error_msg[:200], base_n, self.agent_id, 0)
 
         finally:
             # УТ-4: удаляем ВСЕ загруженные файлы (не только "ready"),

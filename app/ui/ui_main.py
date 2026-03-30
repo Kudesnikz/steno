@@ -2,7 +2,7 @@ import logging
 from PyQt6.QtWidgets import (
     QMainWindow, QToolBar, QWidget, QSplitter, QListWidget, QStackedWidget, 
     QSizePolicy, QComboBox, QTextBrowser, QVBoxLayout, QHBoxLayout, QListWidgetItem,
-    QPushButton, QButtonGroup, QFrame, QLabel, QApplication
+    QPushButton, QButtonGroup, QFrame, QLabel, QApplication, QInputDialog, QLineEdit
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QEvent, QSize
 from PyQt6.QtGui import QColor, QAction
@@ -20,6 +20,7 @@ class SessionItemWidget(QWidget):
     delete_confirmed = pyqtSignal(object)
     delete_requested = pyqtSignal(object)
     delete_canceled = pyqtSignal(object)
+    rename_requested = pyqtSignal(object, str)
 
     def __init__(self, session):
         super().__init__()
@@ -45,12 +46,36 @@ class SessionItemWidget(QWidget):
         self.text_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.text_label.setStyleSheet("color: #1d1d1f; font-size: 13px; font-weight: 500; background: transparent;")
         layout.addWidget(self.text_label)
+
+        self.name_edit = QLineEdit(session.display_name)
+        self.name_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.name_edit.setStyleSheet("""
+            QLineEdit {
+                color: #1d1d1f; font-size: 13px; font-weight: 500; 
+                background: #ffffff; border: 1px solid #c7c7cc;
+                border-radius: 4px; padding: 0px 4px;
+            }
+        """)
+        self.name_edit.returnPressed.connect(self.finish_rename)
+        self.name_edit.editingFinished.connect(self.finish_rename)
+        self.name_edit.hide()
+        layout.addWidget(self.name_edit)
         
         # Размер файлов
         self.size_label = QLabel(f"{session.total_size_mb:.1f} MB")
         self.size_label.setStyleSheet("color: rgba(29, 29, 31, 0.4); font-size: 11px; font-weight: 500; background: transparent;")
         self.size_label.setContentsMargins(0, 0, 8, 0)
         layout.addWidget(self.size_label)
+        
+        # Кнопка переименования (карандаш)
+        self.edit_btn = QPushButton()
+        self.edit_btn.setIcon(qta.icon('fa5s.pen', color='#8e8e93'))
+        self.edit_btn.setFixedSize(24, 24)
+        self.edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.edit_btn.setToolTip("Переименовать запись")
+        self.edit_btn.setStyleSheet("background: transparent; border: none;")
+        self.edit_btn.clicked.connect(self.request_rename)
+        layout.addWidget(self.edit_btn)
         
         # Кнопка корзины (изначально видима)
         self.trash_btn = QPushButton()
@@ -88,9 +113,37 @@ class SessionItemWidget(QWidget):
         # Поскольку цвет выделения #F7E391 (светло-желтый), оставляем текст и иконки темными
         self.text_label.setStyleSheet("color: #1d1d1f; font-size: 13px; font-weight: 500; background: transparent;")
         self.trash_btn.setIcon(qta.icon('fa5s.trash', color='#8e8e93'))
+        self.edit_btn.setIcon(qta.icon('fa5s.pen', color='#8e8e93'))
+
+    def request_rename(self):
+        self.text_label.hide()
+        self.name_edit.setText(self.session.display_name)
+        self.name_edit.show()
+        self.name_edit.setFocus()
+        self.name_edit.selectAll()
+        
+        self.edit_btn.hide()
+        self.trash_btn.hide()
+
+    def finish_rename(self):
+        if not self.name_edit.isVisible():
+            return
+            
+        new_name = self.name_edit.text().strip()
+        if new_name and new_name != self.session.display_name:
+            self.session.rename(new_name)
+            self.rename_requested.emit(self.session, new_name)
+            
+        self.text_label.setText(self.session.display_name)
+        
+        self.name_edit.hide()
+        self.text_label.show()
+        self.edit_btn.show()
+        self.trash_btn.show()
 
     def request_delete(self):
         self.state = 'confirming'
+        self.edit_btn.hide()
         self.trash_btn.hide()
         self.cancel_btn.show()
         self.confirm_btn.show()
@@ -101,6 +154,7 @@ class SessionItemWidget(QWidget):
             self.state = 'idle'
             self.cancel_btn.hide()
             self.confirm_btn.hide()
+            self.edit_btn.show()
             self.trash_btn.show()
             self.delete_canceled.emit(self)
 
@@ -159,7 +213,8 @@ class MainWindow(QMainWindow):
                     while current_obj:
                         if current_obj in (self.confirming_widget.confirm_btn,
                                            self.confirming_widget.cancel_btn,
-                                           self.confirming_widget.trash_btn):
+                                           self.confirming_widget.trash_btn,
+                                           self.confirming_widget.edit_btn):
                             is_btn = True
                             break
                         current_obj = current_obj.parent()
@@ -178,7 +233,11 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
-        # Нативный тулбар и заголовок теперь управляются самой macOS.
+        # УТ-6 fix: переустанавливаем фильтр, если окно было закрыто и показано снова
+        app = QApplication.instance()
+        if app:
+            app.removeEventFilter(self)  # Предотвращаем двойную установку
+            app.installEventFilter(self)
 
     def setup_toolbar(self):
         # Используем DraggableToolbar для перетаскивания окна
@@ -412,6 +471,7 @@ class MainWindow(QMainWindow):
             widget.delete_requested.connect(self.on_delete_requested)
             widget.delete_canceled.connect(self.on_delete_canceled)
             widget.delete_confirmed.connect(self.on_delete_confirmed)
+            widget.rename_requested.connect(self.on_rename_requested)
             
             self.sessions_list.setItemWidget(item, widget)
             
@@ -443,6 +503,9 @@ class MainWindow(QMainWindow):
                     
         self.session_manager.delete_session(session.base_name)
         self.refresh_data()
+
+    def on_rename_requested(self, session, new_name):
+        pass
 
     def on_session_selected(self, idx):
         # Обновляем визуальное состояние выделения в кастомных виджетах

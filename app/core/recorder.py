@@ -3,6 +3,7 @@ import sys
 import os
 import objc
 import logging
+import threading
 from Foundation import NSObject, NSLog
 from AVFoundation import (
     AVAssetWriter, AVAssetWriterInput, AVMediaTypeVideo, AVMediaTypeAudio,
@@ -234,40 +235,82 @@ class ScreenRecorder(NSObject):
                 self.start_callback(False, "Failed to start one of the writers")
 
     def stop(self):
+        # КРИТ-3 fix: строгий порядок остановки
+        # 1. Блокируем новые буферы
+        # 2. Ждём остановки источников данных
+        # 3. ТОЛЬКО потом markAsFinished + finishWriting
         logger.info("ScreenRecorder: stop called")
         self.is_recording = False
         
+        # 1. Останавливаем SCStream и ЖДЁМ completion handler
         try:
-            if self.stream: 
-                self.stream.stopCaptureWithCompletionHandler_(lambda e: None)
+            if self.stream:
+                stop_event = threading.Event()
+                def on_stream_stopped(e):
+                    if e:
+                        logger.error(f"Stream stop error: {e}")
+                    stop_event.set()
+                self.stream.stopCaptureWithCompletionHandler_(on_stream_stopped)
+                stop_event.wait(timeout=3.0)
         except Exception as e:
             logger.error(f"Error stopping stream: {e}")
 
+        # 2. Останавливаем микрофонную сессию
         try:
             if self.mic_session: 
                 self.mic_session.stopRunning()
         except Exception as e:
             logger.error(f"Error stopping mic session: {e}")
             
-        # Маркируем инпуты как finished
+        # 3. Маркируем инпуты как finished (теперь безопасно — новых буферов не будет)
         for inp in [self.video_input, self.mic_input, self.sys_input]:
              if inp:
                  try: inp.markAsFinished()
                  except Exception as e: logger.error(f"Error marking input finished: {e}")
         
-        # Закрываем Main Writer
+        # 4. Финализируем writers
+        writers_done = threading.Event()
+        writers_pending = [0]  # счётчик ожидаемых callbacks
+        
+        def on_writer_done(name):
+            logger.info(f"{name} finished")
+            writers_pending[0] -= 1
+            if writers_pending[0] <= 0:
+                writers_done.set()
+        
         if self.main_writer:
+            writers_pending[0] += 1
             try:
-                self.main_writer.finishWritingWithCompletionHandler_(lambda: logger.info("Main Writer finished"))
+                self.main_writer.finishWritingWithCompletionHandler_(
+                    lambda: on_writer_done("Main Writer")
+                )
             except Exception as e:
                 logger.error(f"Error finishing Main Writer: {e}")
+                writers_pending[0] -= 1
             
-        # Закрываем Aux Writer
         if self.aux_writer:
+            writers_pending[0] += 1
             try:
-                self.aux_writer.finishWritingWithCompletionHandler_(lambda: logger.info("Aux Audio Writer finished"))
+                self.aux_writer.finishWritingWithCompletionHandler_(
+                    lambda: on_writer_done("Aux Writer")
+                )
             except Exception as e:
                 logger.error(f"Error finishing Aux Writer: {e}")
+                writers_pending[0] -= 1
+
+        # КРИТ-4 fix: ждём фактического завершения записи
+        if writers_pending[0] > 0:
+            writers_done.wait(timeout=5.0)
+
+        # УТ-1 fix: обнуляем ObjC-ссылки для разрыва retain-циклов
+        self.stream = None
+        self.mic_session = None
+        self.video_input = None
+        self.sys_input = None
+        self.mic_input = None
+        self.video_adaptor = None
+        self.main_writer = None
+        self.aux_writer = None
 
     # --- Delegates ---
 

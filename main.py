@@ -3,6 +3,7 @@ import sys
 import os
 import logging
 import time
+import copy
 import subprocess
 import certifi
 from datetime import datetime
@@ -74,8 +75,13 @@ class MeetAssistantApp(QObject):
         self.recording_timer.timeout.connect(self.update_tray_timer)
         
         self.recording_signals = RecordingSignals()
-        self.recording_signals.started.connect(self._on_recording_started)
-        self.recording_signals.failed.connect(self._on_recording_failed)
+        # АРХ-7 fix: явно QueuedConnection — callback приходит из GCD-потока macOS
+        self.recording_signals.started.connect(
+            self._on_recording_started, Qt.ConnectionType.QueuedConnection
+        )
+        self.recording_signals.failed.connect(
+            self._on_recording_failed, Qt.ConnectionType.QueuedConnection
+        )
         
         # Load Icons
         self.icons = {
@@ -183,7 +189,10 @@ class MeetAssistantApp(QObject):
         self.settings_dialog.raise_()
 
     def open_folder(self):
-        subprocess.call(["open", self.config.get("save_dir", "")])
+        # АРХ-3 fix: проверяем, что путь — реальная директория
+        dir_path = self.config.get("save_dir", "")
+        if os.path.isdir(dir_path):
+            subprocess.Popen(["open", dir_path])
 
     def quit_app(self):
         # Сигнал aboutToQuit вызовет _on_about_to_quit до закрытия
@@ -196,14 +205,28 @@ class MeetAssistantApp(QObject):
         logger.info("_on_about_to_quit: начинаем корректное завершение")
         if self.is_recording:
             self.stop_recording()
+        
+        # УТ-4 fix: останавливаем все открытые плееры (освобождаем sounddevice/ffmpeg)
+        from app.ui.ui_player import PlayerWidget
+        for i in range(self.main_window.stacked_widget.count()):
+            widget = self.main_window.stacked_widget.widget(i)
+            if isinstance(widget, PlayerWidget):
+                try:
+                    widget.engine.stop()
+                except Exception:
+                    pass
+        
         worker = getattr(self, 'worker', None)
         if worker is not None and worker.isRunning():
             logger.info("Ожидаем завершения AIWorker...")
             worker.cancel()
-            if not worker.wait(5000):  # 5 секунд
+            if not worker.wait(5000):
                 logger.warning("AIWorker не завершился за 5 сек — принудительно завершаем")
                 worker.terminate()
                 worker.wait(1000)
+        
+        # УТ-2 fix: освобождаем нативный NSStatusItem
+        self.tray_manager.cleanup()
 
     def toggle_recording(self):
         if self.is_recording:
@@ -226,6 +249,19 @@ class MeetAssistantApp(QObject):
             
         self.current_filename = os.path.join(save_dir, f"Meet_{timestamp}.mp4")
         mic_filename = os.path.join(save_dir, f"Meet_{timestamp}_mic.m4a")
+        json_filename = os.path.join(save_dir, f"Meet_{timestamp}.json")
+        
+        try:
+            import json
+            default_name = timestamp.replace("_", " ")
+            metadata = {
+                "name": default_name,
+                "created_at": timestamp
+            }
+            with open(json_filename, "w", encoding="utf-8") as f:
+                json.dump(metadata, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            logger.error(f"Failed to create metadata file: {e}")
         
         try:
             url_main = NSURL.fileURLWithPath_(self.current_filename)
@@ -311,12 +347,21 @@ class MeetAssistantApp(QObject):
         if self.is_processing:
             QMessageBox.warning(self.main_window, "Занято", "Уже идет генерация.")
             return
+        
+        # КРИТ-6 fix: отключаем сигнал старого worker, если он ещё существует
+        old_worker = getattr(self, 'worker', None)
+        if old_worker is not None:
+            try:
+                old_worker.finished_signal.disconnect(self.on_processing_finished)
+            except TypeError:
+                pass  # уже отключен
             
         self.is_processing = True
         self.tray_manager.set_processing_state(True)
         self.main_window.set_generating_state(True)
-            
-        self.worker = AIWorker(session_base_path, self.config, agent_id)
+        
+        # УТ-5 fix: передаём замороженную копию конфига в рабочий поток
+        self.worker = AIWorker(session_base_path, copy.deepcopy(self.config), agent_id)
         self.worker.finished_signal.connect(self.on_processing_finished)
         self.worker.start()
 

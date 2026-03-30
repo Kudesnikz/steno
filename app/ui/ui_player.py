@@ -56,10 +56,14 @@ class PlayerEngine(QObject):
         self.video_thread = None
         self.stop_event = threading.Event()
         
+        # АРХ-11: Event для паузы — потоки блокируются вместо busy-wait
+        self._pause_event = threading.Event()
+        self._pause_event.set()  # Начально не на паузе (set = играем)
+        
         # Аудио поток вывода
         self.sd_stream = None
 
-        # КРИТ-2: защита shared state (is_playing, is_paused, audio_time)
+        # КРИТ-2/КРИТ-5: защита shared state (is_playing, is_paused, audio_time)
         # от гонок данных между audio_thread / video_thread / UI-потоком
         self._state_lock = threading.Lock()
 
@@ -212,11 +216,22 @@ class PlayerEngine(QObject):
         self.video_thread.start()
 
     def stop(self):
-        # КРИТ-2: сначала выставляем флаг, затем останавливаем процессы
+        # КРИТ-1 fix: сначала сигналим потокам остановиться, потом ждём их
+        # завершения, и ТОЛЬКО после этого убиваем subprocess —
+        # иначе потоки читают из убитого pipe.
         with self._state_lock:
             self.is_playing = False
         self.stop_event.set()
+        # Разблокируем потоки, если они на паузе (АРХ-11)
+        self._pause_event.set()
         
+        # Ждём завершения потоков ДО убийства процессов
+        if self.audio_thread and self.audio_thread.is_alive():
+            self.audio_thread.join(timeout=2.0)
+        if self.video_thread and self.video_thread.is_alive():
+            self.video_thread.join(timeout=2.0)
+        
+        # Теперь безопасно убиваем sounddevice и subprocess
         if self.sd_stream:
             try:
                 self.sd_stream.stop()
@@ -227,45 +242,51 @@ class PlayerEngine(QObject):
             
         if self.video_proc:
             self.video_proc.kill()
-            self.video_proc.wait()  # КРИТ-3: собираем zombie-процесс
+            self.video_proc.wait()
             self.video_proc = None
             
         for proc in self.audio_procs:
             if proc:
                 proc.kill()
-                proc.wait()  # КРИТ-3: собираем zombie-процесс
+                proc.wait()
         self.audio_procs.clear()
-        
-        if self.audio_thread and self.audio_thread.is_alive():
-            self.audio_thread.join(timeout=0.5)
-        if self.video_thread and self.video_thread.is_alive():
-            self.video_thread.join(timeout=0.5)
 
     def toggle_pause(self):
-        with self._state_lock:  # КРИТ-2: Lock при чтении/записи is_paused
+        with self._state_lock:
             if not self.is_playing:
-                # start() вызываем вне lock, чтобы избежать deadlock
                 do_start = True
             else:
                 self.is_paused = not self.is_paused
                 do_start = False
                 result = not self.is_paused
+                # АРХ-11: управляем Event-ом паузы
+                if self.is_paused:
+                    self._pause_event.clear()  # Блокируем потоки
+                else:
+                    self._pause_event.set()     # Разблокируем потоки
         if do_start:
             self.start(self.audio_time)
-            return True  # is playing now
-        return result  # True = играет, False = на паузе
+            return True
+        return result
 
     def seek(self, time_sec):
-        # Чтобы сделать seek, нам нужно перезапустить процессы
-        was_paused = self.is_paused
-        was_playing = self.is_playing
+        # КРИТ-5 fix: чтение/запись shared state под lock
+        with self._state_lock:
+            was_paused = self.is_paused
+            was_playing = self.is_playing
         
         if was_playing:
             self.start(time_sec)
-            self.is_paused = was_paused
+            with self._state_lock:
+                self.is_paused = was_paused
+                if was_paused:
+                    self._pause_event.clear()
+                else:
+                    self._pause_event.set()
             self.time_updated.emit(self.audio_time)
         else:
-            self.audio_time = time_sec
+            with self._state_lock:
+                self.audio_time = time_sec
             self.time_updated.emit(self.audio_time)
             # Извлекаем 1 кадр для превью
             self._extract_preview(time_sec)
@@ -279,12 +300,15 @@ class PlayerEngine(QObject):
             "-s", f"{self.v_width}x{self.v_height}", "-vcodec", "rawvideo", "-loglevel", "quiet", "-"
         ]
         try:
-            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            # УТ-3 fix: timeout предотвращает зависание UI на битых файлах
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
             if len(proc.stdout) >= self.frame_size:
                 img = QImage(proc.stdout[:self.frame_size], self.v_width, self.v_height, self.v_width * 3, QImage.Format.Format_RGB888)
                 self.frame_ready.emit(img.copy())
-        except Exception as e:
-            pass # print("Preview extraction error:", e)
+        except subprocess.TimeoutExpired:
+            pass  # ffmpeg завис на повреждённом файле
+        except Exception:
+            pass
 
     def _audio_loop(self):
         bytes_per_sample = 2 * self.channels # 16bit = 2 bytes
@@ -292,9 +316,9 @@ class PlayerEngine(QObject):
         empty_chunk = np.zeros((self.chunk_size, self.channels), dtype=np.int16)
         
         while not self.stop_event.is_set():
-            if self.is_paused:
-                time.sleep(0.05)
-                continue
+            # АРХ-11 fix: блокирующее ожидание вместо busy-wait spin loop
+            if not self._pause_event.wait(timeout=0.5):
+                continue  # Всё ещё на паузе — проверяем stop_event
                 
             chunks_to_mix = []
             eof_count = 0
@@ -360,10 +384,10 @@ class PlayerEngine(QObject):
             return
             
         while not self.stop_event.is_set():
-            if self.is_paused:
-                time.sleep(0.03)
+            # АРХ-11 fix: блокирующее ожидание вместо busy-wait
+            if not self._pause_event.wait(timeout=0.5):
                 continue
-                
+
             target_frame = int(self.audio_time * self.fps)
             
             if self.video_frame < target_frame:
