@@ -13,7 +13,7 @@ from PyQt6.QtGui import QIcon, QFont
 from PyQt6.QtCore import QTimer, QObject, pyqtSignal, Qt
 
 # --- Модули приложения ---
-from app.core.config import ConfigManager, CONFIG_FILE, VIDEO_QUALITY_PRESETS
+from app.core.config import ConfigManager, CONFIG_FILE, CONFIG_DIR, LOG_FILE, VIDEO_QUALITY_PRESETS
 
 # --- Сигналы для связи нативных потоков с UI ---
 class RecordingSignals(QObject):
@@ -29,17 +29,21 @@ from app.core.recorder import ScreenRecorder
 from Foundation import NSURL
 
 # --- Настройка логирования ---
-LOG_DIR = os.path.expanduser("~/Library/Logs/Steno")
-if not os.path.exists(LOG_DIR):
-    os.makedirs(LOG_DIR)
-LOG_FILE = os.path.join(LOG_DIR, "app.log")
+from logging.handlers import RotatingFileHandler
+
+os.makedirs(CONFIG_DIR, exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(LOG_FILE, encoding='utf-8')
+        RotatingFileHandler(
+            LOG_FILE,
+            maxBytes=5 * 1024 * 1024,  # 5 MB
+            backupCount=2,
+            encoding='utf-8'
+        )
     ]
 )
 logger = logging.getLogger("Steno")
@@ -97,6 +101,7 @@ class MeetAssistantApp(QObject):
         self.main_window.start_recording_signal.connect(self.start_recording)
         self.main_window.stop_recording_signal.connect(self.stop_recording)
         self.main_window.generate_signal.connect(self.start_generation)
+        self.main_window.cancel_generation_signal.connect(self.cancel_generation)
         
         # Обработка закрытия главного окна
         self.app.lastWindowClosed.connect(self.on_last_window_closed)
@@ -330,8 +335,53 @@ class MeetAssistantApp(QObject):
         self.tray_manager.set_recording_state(False)
         self.main_window.set_recording_state(False)
         self.tray_manager.show_message("Recording Stopped", "Files saved.")
-        
+
+        # Сохраняем recording metadata в JSON
+        if self.current_filename:
+            self._save_recording_metadata()
+
         QTimer.singleShot(1000, self.main_window.refresh_data)
+
+    def _save_recording_metadata(self):
+        """Сохраняет метаданные записи (длительность, качество, размеры) в .json."""
+        import json
+        base_path = self.current_filename.replace(".mp4", "")
+        json_path = f"{base_path}.json"
+        video_path = self.current_filename
+        mic_path = f"{base_path}_mic.m4a"
+
+        data = {}
+        if os.path.exists(json_path):
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                pass
+
+        video_size = 0
+        mic_size = 0
+        try:
+            if os.path.exists(video_path):
+                video_size = round(os.path.getsize(video_path) / (1024 * 1024), 2)
+            if os.path.exists(mic_path):
+                mic_size = round(os.path.getsize(mic_path) / (1024 * 1024), 2)
+        except Exception:
+            pass
+
+        data["recording"] = {
+            "duration_seconds": self.recording_time,
+            "video_quality": self.config.get("video_quality", "Medium"),
+            "video_path": os.path.basename(video_path),
+            "mic_audio_path": os.path.basename(mic_path) if os.path.exists(mic_path) else "",
+            "video_size_mb": video_size,
+            "mic_size_mb": mic_size,
+        }
+
+        try:
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            logger.error(f"Failed to save recording metadata: {e}")
 
     def update_tray_timer(self):
         hours = self.recording_time // 3600
@@ -365,23 +415,79 @@ class MeetAssistantApp(QObject):
         self.worker.finished_signal.connect(self.on_processing_finished)
         self.worker.start()
 
-    def on_processing_finished(self, success, title, message, base_name, agent_id, tokens_used):
+    def cancel_generation(self):
+        """Отмена текущей AI-обработки."""
+        worker = getattr(self, 'worker', None)
+        if worker is not None and worker.isRunning():
+            worker.cancel()
+            logger.info("Generation cancellation requested by user")
+
+    def on_processing_finished(self, success, title, message, base_name, agent_id, metadata):
         self.is_processing = False
         self.tray_manager.set_processing_state(False)
         self.main_window.set_generating_state(False)
-        
-        if success and tokens_used > 0:
-             self.config["used_tokens"] = self.config.get("used_tokens", 0) + tokens_used
-             self.config["last_request_tokens"] = tokens_used
+
+        tokens_total = metadata.get("tokens_total", 0) if isinstance(metadata, dict) else 0
+
+        if success and tokens_total > 0:
+             self.config["used_tokens"] = self.config.get("used_tokens", 0) + tokens_total
+             self.config["last_request_tokens"] = tokens_total
              ConfigManager.save(self.config)
-             self.main_window.update_config(self.config) # Update UI with new token count
-        
+             self.main_window.update_config(self.config)
+
+        # Сохраняем метаданные отчёта в .json сессии
+        if isinstance(metadata, dict) and base_name:
+            self._save_report_metadata(base_name, agent_id, metadata)
+
         if not success:
             self.tray_manager.set_error_state()
+            self.main_window.show_error_banner(message)
             QTimer.singleShot(3000, lambda: self.tray_manager.set_processing_state(False))
-            
+
         self.tray_manager.show_message(title, message)
         self.main_window.refresh_data()
+
+    def _save_report_metadata(self, base_name, agent_id, metadata):
+        """Сохраняет метаданные отчёта в .json файл сессии."""
+        import json
+        save_dir = self.config.get("save_dir", "")
+        json_path = os.path.join(save_dir, f"{base_name}.json")
+
+        data = {}
+        if os.path.exists(json_path):
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                pass
+
+        if "reports" not in data:
+            data["reports"] = []
+
+        report_entry = {
+            "agent_id": agent_id,
+            "agent_name": metadata.get("agent_name", ""),
+            "model": metadata.get("model", ""),
+            "created_at": metadata.get("created_at", ""),
+            "processing_duration_seconds": metadata.get("processing_duration_seconds", 0),
+            "tokens": {
+                "input": metadata.get("tokens_input", 0),
+                "output": metadata.get("tokens_output", 0),
+                "total": metadata.get("tokens_total", 0),
+            },
+            "output_path": metadata.get("output_path", ""),
+            "status": metadata.get("status", "unknown"),
+        }
+        if metadata.get("error"):
+            report_entry["error"] = metadata["error"]
+
+        data["reports"].append(report_entry)
+
+        try:
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            logger.error(f"Failed to save report metadata: {e}")
 
 
 if __name__ == "__main__":

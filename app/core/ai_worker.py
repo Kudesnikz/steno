@@ -40,14 +40,15 @@ def get_meeting_date(filename):
 
 
 class AIWorker(QThread):
-    # success, title, message, base_name, agent_id, tokens_used
-    finished_signal = pyqtSignal(bool, str, str, str, str, int)
+    # success, title, message, base_name, agent_id, metadata_dict
+    finished_signal = pyqtSignal(bool, str, str, str, str, dict)
 
     def __init__(self, session_base_path, config, agent_id):
         super().__init__()
         self.session_base_path = session_base_path
         self.config = config
         self.agent_id = agent_id
+        self._start_time = None
         # КРИТ-2 fix: threading.Event вместо голого bool —
         # гарантированный memory barrier при cross-thread доступе
         self._cancel_event = threading.Event()
@@ -76,6 +77,7 @@ class AIWorker(QThread):
         uploaded_files = []
         client = None
         total_tokens = 0
+        self._start_time = time.time()
 
         try:
             logger.info(f"Starting AI processing: {self.session_base_path} / agent {self.agent_id}")
@@ -83,7 +85,8 @@ class AIWorker(QThread):
 
             if not api_key:
                 self.finished_signal.emit(
-                    False, "AI Error", "Нет API ключа. Настройте ключ в меню.", "", self.agent_id, 0
+                    False, "AI Error", "Нет API ключа. Настройте ключ в меню.", "", self.agent_id,
+                    {"status": "error"}
                 )
                 return
 
@@ -189,8 +192,12 @@ class AIWorker(QThread):
                 raise Exception(f"generate_content failed after {_MAX_RETRIES} attempts: {last_error}")
 
             # --- Токены ---
+            tokens_input = 0
+            tokens_output = 0
             if response.usage_metadata:
-                total_tokens = response.usage_metadata.total_token_count
+                total_tokens = getattr(response.usage_metadata, 'total_token_count', 0) or 0
+                tokens_input = getattr(response.usage_metadata, 'prompt_token_count', 0) or 0
+                tokens_output = getattr(response.usage_metadata, 'candidates_token_count', 0) or 0
 
             # --- Сохранение ---
             txt_path = f"{self.session_base_path}_protocol_{self.agent_id}.txt"
@@ -200,10 +207,23 @@ class AIWorker(QThread):
             with open(txt_path, "w", encoding="utf-8") as f:
                 f.write(response.text)
 
+            elapsed = int(time.time() - self._start_time) if self._start_time else 0
+            metadata = {
+                "status": "success",
+                "processing_duration_seconds": elapsed,
+                "tokens_input": tokens_input,
+                "tokens_output": tokens_output,
+                "tokens_total": total_tokens,
+                "model": self.config.get("model_name", ""),
+                "agent_name": agent.get("name", self.agent_id),
+                "output_path": os.path.basename(txt_path),
+                "created_at": datetime.now().isoformat(),
+            }
+
             self.finished_signal.emit(
                 True, "Готово!",
                 f"Протокол сохранен: {os.path.basename(txt_path)}",
-                base_name, self.agent_id, total_tokens,
+                base_name, self.agent_id, metadata,
             )
 
         except Exception as e:
@@ -214,7 +234,20 @@ class AIWorker(QThread):
                 error_msg = error_msg.replace(api_key, "***MASKED***")
             logger.error(f"AI Worker failed: {error_msg}")
             base_n = os.path.basename(self.session_base_path) if hasattr(self, "session_base_path") else ""
-            self.finished_signal.emit(False, "AI Ошибка", error_msg[:200], base_n, self.agent_id, 0)
+            elapsed = int(time.time() - self._start_time) if self._start_time else 0
+            error_meta = {
+                "status": "error",
+                "processing_duration_seconds": elapsed,
+                "tokens_input": 0,
+                "tokens_output": 0,
+                "tokens_total": 0,
+                "model": self.config.get("model_name", ""),
+                "agent_name": "",
+                "output_path": "",
+                "created_at": datetime.now().isoformat(),
+                "error": error_msg[:200],
+            }
+            self.finished_signal.emit(False, "AI Ошибка", error_msg[:200], base_n, self.agent_id, error_meta)
 
         finally:
             # УТ-4: удаляем ВСЕ загруженные файлы (не только "ready"),

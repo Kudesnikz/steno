@@ -20,6 +20,9 @@ class MeetingSession:
         self.protocols = {}
         
         self.custom_name = None
+        # Расширенные метаданные
+        self.recording_info = None  # dict или None
+        self.reports_info = None    # list[dict] или None
         self._load_metadata()
 
     def _load_metadata(self):
@@ -28,6 +31,8 @@ class MeetingSession:
                 with open(self.json_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     self.custom_name = data.get("name")
+                    self.recording_info = data.get("recording")
+                    self.reports_info = data.get("reports")
             except Exception:
                 pass
 

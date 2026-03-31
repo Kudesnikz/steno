@@ -6,6 +6,7 @@ logger = logging.getLogger("Steno.Config")
 
 CONFIG_DIR = os.path.expanduser("~/.steno")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
+LOG_FILE = os.path.join(CONFIG_DIR, "steno.log")
 OLD_CONFIG_FILE = os.path.expanduser("~/.recorder_app_config.json")
 
 DEFAULT_CONFIG = {

@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy, QComboBox, QTextBrowser, QVBoxLayout, QHBoxLayout, QListWidgetItem,
     QPushButton, QButtonGroup, QFrame, QLabel, QApplication, QInputDialog, QLineEdit
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QEvent, QSize
+from PyQt6.QtCore import Qt, pyqtSignal, QEvent, QSize, QTimer
 from PyQt6.QtGui import QColor, QAction
 import qtawesome as qta
 import markdown
@@ -61,16 +61,10 @@ class SessionItemWidget(QWidget):
         self.name_edit.hide()
         layout.addWidget(self.name_edit)
         
-        # Размер файлов
-        self.size_label = QLabel(f"{session.total_size_mb:.1f} MB")
-        self.size_label.setStyleSheet("color: rgba(29, 29, 31, 0.4); font-size: 11px; font-weight: 500; background: transparent;")
-        self.size_label.setContentsMargins(0, 0, 8, 0)
-        layout.addWidget(self.size_label)
-        
         # Кнопка переименования (карандаш)
         self.edit_btn = QPushButton()
-        self.edit_btn.setIcon(qta.icon('fa5s.pen', color='#8e8e93'))
-        self.edit_btn.setFixedSize(24, 24)
+        self.edit_btn.setIcon(qta.icon('fa5s.pen', color='#bbbbbe'))
+        self.edit_btn.setFixedSize(20, 20)
         self.edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.edit_btn.setToolTip("Переименовать запись")
         self.edit_btn.setStyleSheet("background: transparent; border: none;")
@@ -79,8 +73,8 @@ class SessionItemWidget(QWidget):
         
         # Кнопка корзины (изначально видима)
         self.trash_btn = QPushButton()
-        self.trash_btn.setIcon(qta.icon('fa5s.trash', color='#8e8e93'))
-        self.trash_btn.setFixedSize(24, 24)
+        self.trash_btn.setIcon(qta.icon('fa5s.trash', color='#bbbbbe'))
+        self.trash_btn.setFixedSize(20, 20)
         self.trash_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.trash_btn.setToolTip("Удалить запись")
         self.trash_btn.setStyleSheet("background: transparent; border: none;")
@@ -89,8 +83,8 @@ class SessionItemWidget(QWidget):
         
         # Кнопка отмены (изначально скрыта)
         self.cancel_btn = QPushButton()
-        self.cancel_btn.setIcon(qta.icon('fa5s.times-circle', color='#8e8e93'))
-        self.cancel_btn.setFixedSize(24, 24)
+        self.cancel_btn.setIcon(qta.icon('fa5s.times-circle', ccolor='#bbbbbe'))
+        self.cancel_btn.setFixedSize(20, 20)
         self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.cancel_btn.setToolTip("Отменить удаление")
         self.cancel_btn.setStyleSheet("background: transparent; border: none;")
@@ -101,7 +95,7 @@ class SessionItemWidget(QWidget):
         # Кнопка подтверждения удаления (изначально скрыта)
         self.confirm_btn = QPushButton()
         self.confirm_btn.setIcon(qta.icon('fa5s.trash', color='#ff3b30'))
-        self.confirm_btn.setFixedSize(24, 24)
+        self.confirm_btn.setFixedSize(20, 20)
         self.confirm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.confirm_btn.setToolTip("Подтвердить удаление")
         self.confirm_btn.setStyleSheet("background: transparent; border: none;")
@@ -112,8 +106,8 @@ class SessionItemWidget(QWidget):
     def set_selected(self, is_selected):
         # Поскольку цвет выделения #F7E391 (светло-желтый), оставляем текст и иконки темными
         self.text_label.setStyleSheet("color: #1d1d1f; font-size: 13px; font-weight: 500; background: transparent;")
-        self.trash_btn.setIcon(qta.icon('fa5s.trash', color='#8e8e93'))
-        self.edit_btn.setIcon(qta.icon('fa5s.pen', color='#8e8e93'))
+        self.trash_btn.setIcon(qta.icon('fa5s.trash', color='#bbbbbe'))
+        self.edit_btn.setIcon(qta.icon('fa5s.pen', color='#bbbbbe'))
 
     def request_rename(self):
         self.text_label.hide()
@@ -178,6 +172,7 @@ class MainWindow(QMainWindow):
     start_recording_signal = pyqtSignal()
     stop_recording_signal = pyqtSignal()
     generate_signal = pyqtSignal(str, str) # session_base_path, agent_id
+    cancel_generation_signal = pyqtSignal()
 
     def __init__(self, config):
         super().__init__()
@@ -276,6 +271,31 @@ class MainWindow(QMainWindow):
         self.update_agents_combo()
         self.toolbar_layout.addWidget(self.agent_combo)
         
+        # --- Таймер обработки AI (изначально скрыт) ---
+        self.processing_timer_label = QLabel()
+        self.processing_timer_label.setStyleSheet(
+            "color: #f5a623; font-size: 12px; font-weight: 600; background: transparent;"
+        )
+        self.processing_timer_label.hide()
+        self.toolbar_layout.addWidget(self.processing_timer_label)
+
+        # Кнопка отмены обработки (изначально скрыта)
+        self.cancel_processing_btn = QPushButton()
+        self.cancel_processing_btn.setIcon(qta.icon('fa5s.times-circle', color='#ff3b30'))
+        self.cancel_processing_btn.setFixedSize(20, 20)
+        self.cancel_processing_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cancel_processing_btn.setToolTip("Отменить обработку")
+        self.cancel_processing_btn.setStyleSheet("background: transparent; border: none;")
+        self.cancel_processing_btn.clicked.connect(self.cancel_generation_signal.emit)
+        self.cancel_processing_btn.hide()
+        self.toolbar_layout.addWidget(self.cancel_processing_btn)
+
+        # QTimer для обновления таймера обработки
+        self._processing_elapsed = 0
+        self._processing_timer = QTimer(self)
+        self._processing_timer.setInterval(1000)
+        self._processing_timer.timeout.connect(self._update_processing_timer)
+
         # Generate
         self.generate_btn = QPushButton(" Generate")
         self.generate_btn.setIcon(qta.icon('fa5s.bolt', color='#f5a623'))
@@ -396,6 +416,50 @@ class MainWindow(QMainWindow):
         wrapper_layout.setSpacing(0)
         
         wrapper_layout.addWidget(self.toolbar_widget) # Добавляем тулбар в макет, чтобы он не перекрывался
+
+        # --- Баннер ошибок (изначально скрыт) ---
+        self.error_banner = QFrame()
+        self.error_banner.setStyleSheet("""
+            QFrame {
+                background-color: #fef2f2;
+                border: 1px solid #fca5a5;
+                border-radius: 6px;
+                margin: 2px 8px;
+            }
+        """)
+        error_banner_layout = QHBoxLayout(self.error_banner)
+        error_banner_layout.setContentsMargins(12, 6, 8, 6)
+        error_banner_layout.setSpacing(8)
+
+        error_icon = QLabel()
+        error_icon.setPixmap(qta.icon('fa5s.exclamation-triangle', color='#dc2626').pixmap(16, 16))
+        error_icon.setStyleSheet("background: transparent; border: none;")
+        error_banner_layout.addWidget(error_icon)
+
+        self.error_banner_label = QLabel()
+        self.error_banner_label.setStyleSheet(
+            "color: #991b1b; font-size: 12px; font-weight: 500; background: transparent; border: none;"
+        )
+        self.error_banner_label.setWordWrap(True)
+        self.error_banner_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        error_banner_layout.addWidget(self.error_banner_label)
+
+        error_close_btn = QPushButton()
+        error_close_btn.setIcon(qta.icon('fa5s.times', color='#991b1b'))
+        error_close_btn.setFixedSize(20, 20)
+        error_close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        error_close_btn.setStyleSheet("background: transparent; border: none;")
+        error_close_btn.clicked.connect(self.hide_error_banner)
+        error_banner_layout.addWidget(error_close_btn)
+
+        self.error_banner.hide()
+        wrapper_layout.addWidget(self.error_banner)
+
+        # Автоскрытие баннера через 15 секунд
+        self._error_banner_timer = QTimer(self)
+        self._error_banner_timer.setSingleShot(True)
+        self._error_banner_timer.timeout.connect(self.hide_error_banner)
+
         wrapper_layout.addWidget(self.splitter)
         
         self.setCentralWidget(self.central_wrapper)
@@ -442,9 +506,25 @@ class MainWindow(QMainWindow):
         if is_generating:
             self.generate_btn.setIcon(qta.icon('fa5s.hourglass-half', color='gray'))
             self.generate_btn.setText(" Обработка...")
+            # Показываем таймер и кнопку отмены
+            self._processing_elapsed = 0
+            self.processing_timer_label.setText("AI: 00:00")
+            self.processing_timer_label.show()
+            self.cancel_processing_btn.show()
+            self._processing_timer.start()
         else:
             self.generate_btn.setIcon(qta.icon('fa5s.bolt', color='#f5a623'))
             self.generate_btn.setText(" Generate")
+            # Скрываем таймер и кнопку отмены
+            self._processing_timer.stop()
+            self.processing_timer_label.hide()
+            self.cancel_processing_btn.hide()
+
+    def _update_processing_timer(self):
+        self._processing_elapsed += 1
+        minutes = self._processing_elapsed // 60
+        seconds = self._processing_elapsed % 60
+        self.processing_timer_label.setText(f"AI: {minutes:02d}:{seconds:02d}")
 
     def toggle_recording(self):
         if self.is_recording:
@@ -568,8 +648,59 @@ class MainWindow(QMainWindow):
             agent = ConfigManager.get_agent_by_id(self.config, agent_id)
             tab_name = agent.get("name") if agent else agent_id
             
+            tab_widget = QWidget()
+            tab_layout = QVBoxLayout(tab_widget)
+            tab_layout.setContentsMargins(0, 0, 0, 0)
+            tab_layout.setSpacing(0)
+
+            # Верхняя панель для кнопки копирования
+            top_panel = QWidget()
+            top_layout = QHBoxLayout(top_panel)
+            top_layout.setContentsMargins(10, 10, 20, 0)
+            top_layout.addStretch()
+            
+            copy_btn = QPushButton(" Копировать")
+            copy_btn.setIcon(qta.icon('fa5s.copy', color='#555'))
+            copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            copy_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #f5f5f7;
+                    border: 1px solid #d2d2d7;
+                    border-radius: 4px;
+                    padding: 4px 12px;
+                    color: #1d1d1f;
+                    font-size: 12px;
+                    font-weight: 500;
+                }
+                QPushButton:hover {
+                    background-color: #e5e5ea;
+                }
+            """)
+            
+            def make_copy_handler(path, btn):
+                def handler():
+                    try:
+                        with open(path, "r", encoding="utf-8") as f:
+                            content = f.read()
+                        QApplication.clipboard().setText(content)
+                        btn.setText(" Скопировано!")
+                        btn.setIcon(qta.icon('fa5s.check', color='#34c759'))
+                        QTimer.singleShot(2000, lambda: (
+                            btn.setText(" Копировать"),
+                            btn.setIcon(qta.icon('fa5s.copy', color='#555'))
+                        ))
+                    except Exception as e:
+                        logger.error(f"Ошибка копирования: {e}")
+                return handler
+                
+            copy_btn.clicked.connect(make_copy_handler(file_path, copy_btn))
+            top_layout.addWidget(copy_btn)
+            
+            tab_layout.addWidget(top_panel)
+
             browser = QTextBrowser()
             browser.setStyleSheet("border: none; background-color: transparent;")
+            tab_layout.addWidget(browser)
             
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
@@ -585,8 +716,8 @@ class MainWindow(QMainWindow):
                 
                 styled_html = f"""
                 <html><head><style>
-                    body {{ 
-                        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
+                    body {{
+                        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
                         color: {text_color};
                         line-height: 1.8;
                         font-size: 15px;
@@ -608,21 +739,21 @@ class MainWindow(QMainWindow):
                     p {{ margin-bottom: 1.2em; }}
                     ul, ol {{ margin-bottom: 1.2em; padding-left: 24px; }}
                     li {{ margin-bottom: 0.4em; }}
-                    table {{ 
-                        border-collapse: collapse; 
-                        width: 100%; 
-                        margin-top: 20px; 
-                        margin-bottom: 24px; 
+                    table {{
+                        border-collapse: collapse;
+                        width: 100%;
+                        margin-top: 20px;
+                        margin-bottom: 24px;
                         border-radius: 8px;
                         overflow: hidden;
                     }}
-                    th, td {{ 
-                        border: 1px solid {border_color}; 
-                        padding: 10px 14px; 
-                        text-align: left; 
+                    th, td {{
+                        border: 1px solid {border_color};
+                        padding: 10px 14px;
+                        text-align: left;
                     }}
-                    th {{ 
-                        background-color: {bg_color}; 
+                    th {{
+                        background-color: {bg_color};
                         font-weight: 600;
                     }}
                     code {{
@@ -662,13 +793,18 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 browser.setHtml(f"<h2>Ошибка чтения файла</h2><p>{e}</p>")
                 
-            add_tab(browser, tab_name)
+            add_tab(tab_widget, tab_name)
             
-        # Добавляем вкладку плеера в конец
+        # Добавляем вкладку плеера
         if session.has_video:
             player_widget = PlayerWidget(session, initial_config=self.config)
             player_widget.config_changed.connect(self.on_player_config_changed)
             add_tab(player_widget, "▶️ Плеер")
+
+        # Добавляем вкладку "Инфо" с метаданными сессии
+        if session.recording_info or session.reports_info:
+            info_widget = self._build_info_tab(session)
+            add_tab(info_widget, "ℹ️ Инфо")
 
         if self.stacked_widget.count() > 0:
             self.stacked_widget.setCurrentIndex(0)
@@ -685,6 +821,17 @@ class MainWindow(QMainWindow):
         if idx >= 0:
             self.stacked_widget.setCurrentIndex(idx)
 
+    def show_error_banner(self, message):
+        """Показывает баннер с ошибкой обработки."""
+        self.error_banner_label.setText(f"Ошибка AI: {message}")
+        self.error_banner.show()
+        self._error_banner_timer.start(15000)  # автоскрытие через 15 сек
+
+    def hide_error_banner(self):
+        """Скрывает баннер ошибки."""
+        self.error_banner.hide()
+        self._error_banner_timer.stop()
+
     def on_generate_clicked(self):
         idx = self.sessions_list.currentRow()
         if idx < 0 or idx >= len(self.current_sessions):
@@ -697,6 +844,89 @@ class MainWindow(QMainWindow):
             return
             
         self.generate_signal.emit(session.base_path, agent_id)
+
+    def _build_info_tab(self, session):
+        """Формирует виджет вкладки Инфо с метаданными сессии."""
+        browser = QTextBrowser()
+        browser.setStyleSheet("border: none; background-color: transparent;")
+        browser.setOpenExternalLinks(False)
+
+        html_parts = []
+        html_parts.append("""<html><head><style>
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+                color: #1d1d1f; font-size: 14px; line-height: 1.6;
+                padding: 20px 40px; max-width: 850px; margin: 0 auto;
+            }
+            h2 { font-size: 20px; font-weight: 600; margin-top: 1.2em; margin-bottom: 0.4em;
+                 border-bottom: 1px solid #d2d2d7; padding-bottom: 0.2em; }
+            h3 { font-size: 16px; font-weight: 600; margin-top: 1em; margin-bottom: 0.3em; color: #3a3a3c; }
+            table { border-collapse: collapse; width: 100%; margin-bottom: 16px; }
+            th, td { border: 1px solid #d2d2d7; padding: 8px 12px; text-align: left; font-size: 13px; }
+            th { background-color: #f5f5f7; font-weight: 600; width: 180px; }
+            .badge-success { color: #166534; background: #dcfce7; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+            .badge-error { color: #991b1b; background: #fef2f2; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+            .section { margin-bottom: 24px; }
+        </style></head><body>""")
+
+        # Секция: Запись
+        rec = session.recording_info
+        if rec:
+            dur = rec.get("duration_seconds", 0)
+            dur_str = f"{dur // 3600:02d}:{(dur % 3600) // 60:02d}:{dur % 60:02d}" if dur else "—"
+            html_parts.append(f"""
+            <div class="section">
+            <h2>📹 Запись</h2>
+            <table>
+                <tr><th>Длительность</th><td>{dur_str}</td></tr>
+                <tr><th>Качество видео</th><td>{rec.get('video_quality', '—')}</td></tr>
+                <tr><th>Видео файл</th><td>{rec.get('video_path', '—')}</td></tr>
+                <tr><th>Аудио (микрофон)</th><td>{rec.get('mic_audio_path', '—') or '—'}</td></tr>
+                <tr><th>Размер видео</th><td>{rec.get('video_size_mb', 0):.1f} MB</td></tr>
+                <tr><th>Размер аудио</th><td>{rec.get('mic_size_mb', 0):.1f} MB</td></tr>
+            </table>
+            </div>""")
+
+        # Секция: Отчёты AI
+        reports = session.reports_info
+        if reports:
+            html_parts.append('<div class="section"><h2>🤖 Отчёты AI</h2>')
+            for i, report in enumerate(reports, 1):
+                status = report.get("status", "unknown")
+                badge_class = "badge-success" if status == "success" else "badge-error"
+                badge_text = "✓ Успех" if status == "success" else f"✗ {status}"
+
+                tokens = report.get("tokens", {})
+                t_in = tokens.get("input", 0)
+                t_out = tokens.get("output", 0)
+                t_total = tokens.get("total", 0)
+
+                proc_dur = report.get("processing_duration_seconds", 0)
+                proc_str = f"{proc_dur // 60}м {proc_dur % 60}с" if proc_dur else "—"
+
+                html_parts.append(f"""
+                <h3>Отчёт #{i}: {report.get('agent_name', report.get('agent_id', '?'))}</h3>
+                <table>
+                    <tr><th>Статус</th><td><span class="{badge_class}">{badge_text}</span></td></tr>
+                    <tr><th>Модель</th><td>{report.get('model', '—')}</td></tr>
+                    <tr><th>Агент</th><td>{report.get('agent_name', '—')} ({report.get('agent_id', '—')})</td></tr>
+                    <tr><th>Время обработки</th><td>{proc_str}</td></tr>
+                    <tr><th>Токены (input)</th><td>{t_in:,}</td></tr>
+                    <tr><th>Токены (output)</th><td>{t_out:,}</td></tr>
+                    <tr><th>Токены (total)</th><td>{t_total:,}</td></tr>
+                    <tr><th>Дата создания</th><td>{report.get('created_at', '—')}</td></tr>
+                    <tr><th>Файл результата</th><td>{report.get('output_path', '—')}</td></tr>
+                </table>""")
+                if report.get("error"):
+                    html_parts.append(f'<p style="color:#991b1b; font-size:12px;">Ошибка: {report["error"]}</p>')
+            html_parts.append('</div>')
+
+        if not rec and not reports:
+            html_parts.append('<p style="color:gray; text-align:center; margin-top:50px;">Нет метаданных для отображения</p>')
+
+        html_parts.append("</body></html>")
+        browser.setHtml("".join(html_parts))
+        return browser
 
     def closeEvent(self, event):
         # УТ-1: снимаем глобальный фильтр событий перед закрытием
