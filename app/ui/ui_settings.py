@@ -192,6 +192,19 @@ class SettingsDialog(QDialog):
         
         layout.addLayout(combo_layout)
         
+        # Audio Settings
+        audio_layout = QVBoxLayout()
+        self.aec_checkbox = QCheckBox("Эхоподавление (AEC)")
+        self.aec_checkbox.setChecked(self.config.get("echo_cancellation_enabled", True))
+        
+        self.df_checkbox = QCheckBox("Шумоподавление (DeepFilterNet)")
+        self.df_checkbox.setChecked(self.config.get("noise_reduction_enabled", False))
+        
+        audio_layout.addWidget(QLabel("Обработка аудио:"))
+        audio_layout.addWidget(self.aec_checkbox)
+        audio_layout.addWidget(self.df_checkbox)
+        layout.addLayout(audio_layout)
+        
         # Recording Time Checkbox
         self.show_time_checkbox = QCheckBox("Отображать время записи")
         self.show_time_checkbox.setChecked(self.config.get("show_recording_time", True))
@@ -349,6 +362,8 @@ class SettingsDialog(QDialog):
         self.config["video_quality"] = self.quality_combo.currentText()
         self.config["model_name"] = self.model_combo.currentText()
         self.config["show_recording_time"] = self.show_time_checkbox.isChecked()
+        self.config["echo_cancellation_enabled"] = self.aec_checkbox.isChecked()
+        self.config["noise_reduction_enabled"] = self.df_checkbox.isChecked()
         
         # Ensure active_agent_id is valid
         active_id = self.config.get("active_agent_id", "default")

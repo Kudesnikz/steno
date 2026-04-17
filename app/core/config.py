@@ -24,6 +24,12 @@ DEFAULT_CONFIG = {
     "mute_mic": False,
     "used_tokens": 0,
     "last_request_tokens": 0,
+    # Громкость при микшировании (0.0 - 2.0)
+    "sys_volume": 1.0,
+    "mic_volume": 1.0,
+    # Настройки обработки аудио
+    "echo_cancellation_enabled": True,   # Адаптивный фильтр PFDKF (рекомендуется)
+    "noise_reduction_enabled": False,    # DeepFilterNet нейросетевая очистка (опционально)
     "active_agent_id": "default",
     "agents": [
         {

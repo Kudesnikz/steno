@@ -187,6 +187,8 @@ class SystemTrayManager:
         
         if HAS_PYOBJC:
             self.timer_item.button().setImage_(self.ns_icons[icon_key])
+            if not is_processing:
+                self.timer_item.button().setTitle_("")
             self.update_native_menu()
         else:
             self.tray.setIcon(self.icons[icon_key])

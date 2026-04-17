@@ -4,7 +4,7 @@ import os
 import objc
 import logging
 import threading
-from Foundation import NSObject, NSLog
+from Foundation import NSObject, NSLog, NSURL
 from AVFoundation import (
     AVAssetWriter, AVAssetWriterInput, AVMediaTypeVideo, AVMediaTypeAudio,
     AVFileTypeMPEG4, AVFileTypeAppleM4A, # <--- Добавили тип M4A
@@ -33,13 +33,14 @@ STREAM_SIGNATURE = b'v@:@@q'
 
 class ScreenRecorder(NSObject):
     
-    # Изменили сигнатуру: теперь принимаем main_url (Video+SysAudio) и aux_url (MicAudio)
-    def initWithOutputURLs_auxURL_videoConfig_(self, main_url, aux_url, config):
+    # Сигнатура совпадает с вызовом из main.py
+    def initWithOutputURL_videoConfig_appConfig_(self, main_url, config, app_config):
         self = objc.super(ScreenRecorder, self).init()
         if self is None: return None
         
         self.main_url = main_url
-        self.aux_url = aux_url
+        self.aux_url = NSURL.fileURLWithPath_(main_url.path() + "_tmp_mic.m4a")
+        self.app_config = app_config
         self.width = int(config.get("width", 1280))
         self.height = int(config.get("height", 720))
         self.fps = int(config.get("fps", 10))
@@ -68,7 +69,7 @@ class ScreenRecorder(NSObject):
         self.aux_session_started = False
         
         # --- Cleanup Files ---
-        for url in [main_url, aux_url]:
+        for url in [main_url, self.aux_url]:
             path = url.path()
             if os.path.exists(path):
                 try:
@@ -130,7 +131,7 @@ class ScreenRecorder(NSObject):
         # ==========================================
         err_aux = None
         self.aux_writer, err_aux = AVAssetWriter.alloc().initWithURL_fileType_error_(
-            aux_url, AVFileTypeAppleM4A, None # Используем контейнер M4A для аудио
+            self.aux_url, AVFileTypeAppleM4A, None # Используем контейнер M4A для аудио
         )
         if err_aux:
              logger.error(f"Error creating Aux Audio Writer: {err_aux}")

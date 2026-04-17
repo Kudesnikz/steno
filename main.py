@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+    # -*- coding: utf-8 -*-
 import sys
 import os
 import logging
@@ -253,7 +253,7 @@ class MeetAssistantApp(QObject):
             os.makedirs(save_dir)
             
         self.current_filename = os.path.join(save_dir, f"Meet_{timestamp}.mp4")
-        mic_filename = os.path.join(save_dir, f"Meet_{timestamp}_mic.m4a")
+        self.current_filename = os.path.join(save_dir, f"Meet_{timestamp}.mp4")
         json_filename = os.path.join(save_dir, f"Meet_{timestamp}.json")
         
         try:
@@ -270,12 +270,11 @@ class MeetAssistantApp(QObject):
         
         try:
             url_main = NSURL.fileURLWithPath_(self.current_filename)
-            url_mic = NSURL.fileURLWithPath_(mic_filename)
             
             preset = VIDEO_QUALITY_PRESETS.get(self.config.get("video_quality", "Medium"))
             
-            self.recorder = ScreenRecorder.alloc().initWithOutputURLs_auxURL_videoConfig_(
-                url_main, url_mic, preset
+            self.recorder = ScreenRecorder.alloc().initWithOutputURL_videoConfig_appConfig_(
+                url_main, preset, self.config
             )
             
             if not self.recorder:
@@ -339,7 +338,57 @@ class MeetAssistantApp(QObject):
         # Сохраняем recording metadata в JSON
         if self.current_filename:
             self._save_recording_metadata()
+            
+            use_aec = self.config.get("echo_cancellation_enabled", True)
+            use_df = self.config.get("noise_reduction_enabled", False)
+            
+            # Важно: рекордер сохраняет AAC как main_url.path() + "_tmp_mic.m4a"
+            mic_path = self.current_filename + "_tmp_mic.m4a"
+            out_mp4 = self.current_filename
+            
+            if (use_aec or use_df) and os.path.exists(mic_path) and os.path.getsize(mic_path) > 0:
+                self.start_audio_cleaning(out_mp4, mic_path, out_mp4)
+            else:
+                # Если обработка выключена, но файл mic_path существует (сырой) - попытаемся его тоже смикшировать 
+                # (тот же код микширования, но в AudioCleanerWorker, просто AEC отключено).
+                # AudioCleaner делает это автоматически, если use_aec=False и use_df=False.
+                if os.path.exists(mic_path) and os.path.getsize(mic_path) > 0:
+                    self.start_audio_cleaning(out_mp4, mic_path, out_mp4)
+                else:
+                    QTimer.singleShot(1000, self.main_window.refresh_data)
 
+    def start_audio_cleaning(self, video_path, mic_path, output_path):
+        logger.info(f"Starting AudioCleaner: mic={mic_path}, exists={os.path.exists(mic_path)}")
+        self.is_processing = True
+        self.tray_manager.set_processing_state(True)
+        self.tray_manager.set_timer_text(" Звук: Подготовка ")
+        
+        from app.core.audio_cleaner_worker import AudioCleanerWorker
+        self.audio_worker = AudioCleanerWorker(video_path, mic_path, output_path)
+        self.audio_worker.progress_signal.connect(self.on_audio_progress)
+        self.audio_worker.finished_signal.connect(self.on_audio_finished)
+        self.audio_worker.start()
+
+    def on_audio_progress(self, pct, msg):
+        self.tray_manager.set_timer_text(f" Звук: {pct}% ")
+        
+    def on_audio_finished(self, success, msg):
+        self.is_processing = False
+        self.tray_manager.set_processing_state(False)
+        self.tray_manager.show_message("Обработка аудио", msg)
+        
+        # Удаляем временный mic.wav
+        mic_path = self.audio_worker.mic_wav_path
+        if os.path.exists(mic_path):
+            try: os.remove(mic_path)
+            except: pass
+            
+        # Удаляем временный видео, если был перезаписан
+        tmp_video = self.audio_worker.video_path + ".tmp.mp4"
+        if os.path.exists(tmp_video):
+            try: os.remove(tmp_video)
+            except: pass
+            
         QTimer.singleShot(1000, self.main_window.refresh_data)
 
     def _save_recording_metadata(self):
@@ -348,7 +397,7 @@ class MeetAssistantApp(QObject):
         base_path = self.current_filename.replace(".mp4", "")
         json_path = f"{base_path}.json"
         video_path = self.current_filename
-        mic_path = f"{base_path}_mic.m4a"
+        mic_path = f"{video_path}_tmp_mic.m4a"
 
         data = {}
         if os.path.exists(json_path):
