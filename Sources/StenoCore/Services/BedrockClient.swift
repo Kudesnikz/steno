@@ -25,14 +25,20 @@ public actor BedrockClient {
     }
 
     /// Sends the meeting video through Bedrock Converse using a native `video` content block.
-    public func generateReport(videoURL: URL, config: AppConfig, model: AIModelReference, agent: Agent) async throws -> AIProcessingResult {
+    public func generateReport(
+        videoURL: URL,
+        transcript: AITranscriptContext?,
+        config: AppConfig,
+        model: AIModelReference,
+        agent: Agent
+    ) async throws -> AIProcessingResult {
         let start = Date()
         let body = BedrockConverseRequest(
             messages: [
                 BedrockMessage(
                     role: "user",
                     content: [
-                        .text(AIPromptBuilder.meetingAnalysisPrompt(videoURL: videoURL)),
+                        .text(AIPromptBuilder.meetingAnalysisPrompt(videoURL: videoURL, transcript: transcript)),
                         .video(BedrockVideoBlock(format: videoURL.bedrockVideoFormat, source: BedrockVideoSource(bytes: try Data(contentsOf: videoURL).base64EncodedString())))
                     ]
                 )

@@ -11,11 +11,18 @@ let package = Package(
         .library(name: "StenoCore", targets: ["StenoCore"])
     ],
     dependencies: [
-        .package(url: "https://github.com/realm/SwiftLint.git", from: "0.63.2")
+        .package(url: "https://github.com/realm/SwiftLint.git", from: "0.63.2"),
+        .package(url: "https://github.com/ggml-org/whisper.spm", revision: "a2085436c2eb796af90956b62bd64731f5e5b823")
     ],
     targets: [
         .target(
             name: "StenoCore",
+            dependencies: [
+                .product(name: "whisper", package: "whisper.spm")
+            ],
+            resources: [
+                .copy("Resources/Models")
+            ],
             swiftSettings: [
                 .enableUpcomingFeature("StrictConcurrency")
             ]

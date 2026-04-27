@@ -28,6 +28,7 @@ public enum RecorderEvent: Sendable {
 
 public final class ScreenRecordingService: NSObject, @unchecked Sendable {
     public typealias EventHandler = @Sendable (RecorderEvent) -> Void
+    public typealias AudioHandler = @Sendable (RecordingAudioChunk) -> Void
 
     private enum Lifecycle {
         case idle
@@ -41,6 +42,10 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
     private var stream: SCStream?
     private var recordingOutput: SCRecordingOutput?
     private var eventHandler: EventHandler?
+    private var audioHandler: AudioHandler?
+    private let audioConverter = AudioSampleBufferConverter()
+    private var addedAudioOutputTypes: [SCStreamOutputType] = []
+    private var audioStartPTS: CMTime?
     private var lifecycle: Lifecycle = .idle
     private var didFinishOutput = false
     private var didSendTerminalEvent = false
@@ -50,9 +55,15 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
         super.init()
     }
 
-    public func start(outputURL: URL, preset: VideoQualityPreset, eventHandler: @escaping EventHandler) async throws {
+    public func start(
+        outputURL: URL,
+        preset: VideoQualityPreset,
+        audioHandler: AudioHandler? = nil,
+        eventHandler: @escaping EventHandler
+    ) async throws {
         setLifecycle(.starting)
         self.eventHandler = eventHandler
+        self.audioHandler = audioHandler
         AppLog.info("Starting recording width=\(preset.width) height=\(preset.height) fps=\(preset.fps)", category: .recording)
 
         let content: SCShareableContent
@@ -101,6 +112,10 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
             throw RecordingError.failedToAddRecordingOutput(error.localizedDescription)
         }
 
+        if audioHandler != nil {
+            addAudioOutputs(to: stream)
+        }
+
         self.stream = stream
         self.recordingOutput = recordingOutput
 
@@ -136,6 +151,8 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
                 AppLog.warning("Ignoring removeRecordingOutput failure during stop: \(error.localizedDescription)", category: .recording)
             }
         }
+
+        removeAudioOutputs(from: stream)
 
         AppLog.info("Recording stopped", category: .recording)
         emitTerminalEventIfNeeded(.didFinish)
@@ -183,6 +200,7 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
             if value == .starting {
                 didFinishOutput = false
                 didSendTerminalEvent = false
+                audioStartPTS = nil
             }
         }
     }
@@ -208,6 +226,8 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
         stream = nil
         recordingOutput = nil
         eventHandler = nil
+        audioHandler = nil
+        addedAudioOutputTypes = []
     }
 
     private var isStopping: Bool {
@@ -235,6 +255,53 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
         }
         if shouldEmit {
             eventHandler?(event)
+        }
+    }
+
+    private func addAudioOutputs(to stream: SCStream) {
+        do {
+            try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: nil)
+            addedAudioOutputTypes.append(.audio)
+            AppLog.info("Added system audio stream output for transcription", category: .recording)
+        } catch {
+            AppLog.warning("System audio stream output unavailable: \(error.localizedDescription)", category: .recording)
+        }
+
+        if #available(macOS 15.0, *) {
+            do {
+                try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: nil)
+                addedAudioOutputTypes.append(.microphone)
+                AppLog.info("Added microphone stream output for transcription", category: .recording)
+            } catch {
+                AppLog.warning("Microphone stream output unavailable: \(error.localizedDescription)", category: .recording)
+            }
+        }
+    }
+
+    private func removeAudioOutputs(from stream: SCStream) {
+        for type in addedAudioOutputTypes {
+            do {
+                try stream.removeStreamOutput(self, type: type)
+            } catch {
+                AppLog.warning("Ignoring removeStreamOutput failure during stop: \(error.localizedDescription)", category: .recording)
+            }
+        }
+        addedAudioOutputTypes = []
+    }
+
+    private func relativeAudioStartTime(for sampleBuffer: CMSampleBuffer) -> Double? {
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        guard pts.isValid, pts.seconds.isFinite else {
+            return nil
+        }
+        return stateLock.withLock {
+            if audioStartPTS == nil {
+                audioStartPTS = pts
+            }
+            guard let audioStartPTS else {
+                return nil
+            }
+            return max(0, CMTimeSubtract(pts, audioStartPTS).seconds)
         }
     }
 }
@@ -268,6 +335,36 @@ extension ScreenRecordingService: SCStreamDelegate {
         }
         AppLog.error("ScreenCaptureKit stream stopped with error: \(error.localizedDescription)", category: .recording)
         emitTerminalEventIfNeeded(.didFail(error.localizedDescription))
+    }
+}
+
+extension ScreenRecordingService: SCStreamOutput {
+    public func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        guard let audioHandler else {
+            return
+        }
+
+        let source: RecordingAudioSource
+        switch type {
+        case .audio:
+            source = .system
+        case .microphone:
+            source = .microphone
+        default:
+            return
+        }
+
+        guard let startTimeSeconds = relativeAudioStartTime(for: sampleBuffer) else {
+            return
+        }
+
+        do {
+            if let chunk = try audioConverter.convert(sampleBuffer: sampleBuffer, source: source, startTimeSeconds: startTimeSeconds) {
+                audioHandler(chunk)
+            }
+        } catch {
+            AppLog.warning("Audio sample conversion failed: \(error.localizedDescription)", category: .recording)
+        }
     }
 }
 

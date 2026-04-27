@@ -142,8 +142,45 @@ public struct SettingsView: View {
                         .frame(width: 220)
                 }
             }
+
+            Section("Transcription") {
+                Toggle("Локальная транскрибация Whisper", isOn: $viewModel.config.localTranscriptionEnabled)
+                Toggle("Передавать транскрипт в AI", isOn: $viewModel.config.attachTranscriptToAI)
+                    .disabled(!viewModel.config.localTranscriptionEnabled)
+
+                Picker("Модель", selection: $viewModel.config.localTranscriptionModel) {
+                    ForEach(WhisperModelName.allCases) { model in
+                        Text(model.displayName).tag(model.rawValue)
+                    }
+                }
+                .disabled(!viewModel.config.localTranscriptionEnabled)
+
+                Picker("Язык", selection: $viewModel.config.localTranscriptionLanguage) {
+                    Text("Auto").tag("auto")
+                    Text("Русский").tag("ru")
+                    Text("English").tag("en")
+                }
+                .disabled(!viewModel.config.localTranscriptionEnabled)
+
+                Stepper(value: $viewModel.config.localTranscriptionThreadCount, in: 1...4) {
+                    Text("Потоки CPU: \(viewModel.config.localTranscriptionThreadCount)")
+                }
+                .disabled(!viewModel.config.localTranscriptionEnabled)
+
+                LabeledContent("Статус модели") {
+                    Text(whisperModelStatus)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
         .formStyle(.grouped)
+    }
+
+    private var whisperModelStatus: String {
+        guard WhisperModelName(rawValue: viewModel.config.localTranscriptionModel) != nil else {
+            return "неизвестная модель"
+        }
+        return "bundled tiny q5_1"
     }
 
     private var videoQualityDetails: some View {

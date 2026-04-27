@@ -17,6 +17,9 @@ public final class AppViewModel {
     public var errorMessage: String?
     public var availableAIModels: [AIModelReference] = AIModelCatalog.fallbackModels
     public var isRefreshingAIModels = false
+    public var isTranscribing = false
+    public var liveTranscriptDocument: TranscriptDocument?
+    public var transcriptionErrorMessage: String?
     public var showOnboarding = false
     public var showSettings = false
     public var permissionState = PermissionState(hasScreenCapture: false, hasMicrophone: false)
@@ -27,6 +30,7 @@ public final class AppViewModel {
     @ObservationIgnored private let aiClient: AIProcessingClient
     @ObservationIgnored private let modelCatalogService: AIModelCatalogService
     @ObservationIgnored private var recorder: ScreenRecordingService?
+    @ObservationIgnored private var transcriptionCoordinator: RealtimeTranscriptionCoordinator?
     @ObservationIgnored private var recordingTimerTask: Task<Void, Never>?
     @ObservationIgnored private var aiTask: Task<Void, Never>?
     @ObservationIgnored private var currentRecordingBaseName: String?
@@ -259,14 +263,46 @@ public final class AppViewModel {
             currentRecordingBaseName = baseName
             currentRecordingURL = outputURL
             recordingDuration = 0
+            liveTranscriptDocument = nil
+            transcriptionErrorMessage = nil
+            if config.localTranscriptionEnabled {
+                let coordinator = RealtimeTranscriptionCoordinator(
+                    baseName: baseName,
+                    saveDirectory: saveURL,
+                    config: config,
+                    onUpdate: { [weak self] document in
+                        Task { @MainActor in
+                            self?.liveTranscriptDocument = document
+                        }
+                    }
+                )
+                transcriptionCoordinator = coordinator
+                isTranscribing = true
+                liveTranscriptDocument = TranscriptDocument(
+                    baseName: baseName,
+                    modelName: config.localTranscriptionModel,
+                    language: config.localTranscriptionLanguage
+                )
+            }
             AppLog.info("Recording requested baseName=\(baseName)", category: .recording)
 
-            try await recorder.start(outputURL: outputURL, preset: config.preset()) { [weak self] event in
+            let audioHandler = makeAudioHandler(coordinator: transcriptionCoordinator)
+
+            try await recorder.start(outputURL: outputURL, preset: config.preset(), audioHandler: audioHandler) { [weak self] event in
                 Task { @MainActor in
                     self?.handleRecorderEvent(event)
                 }
             }
             try sessionStore.createInitialMetadata(baseName: baseName, displayName: timestamp.replacingOccurrences(of: "_", with: " "), createdAt: timestamp)
+            if config.localTranscriptionEnabled {
+                try sessionStore.updateTranscriptionMetadata(
+                    baseName: baseName,
+                    status: .running,
+                    modelName: config.localTranscriptionModel,
+                    language: config.localTranscriptionLanguage,
+                    segmentCount: 0
+                )
+            }
             isRecording = true
             statusMessage = "Recording started"
             startRecordingTimer()
@@ -278,6 +314,9 @@ public final class AppViewModel {
             }
             isRecording = false
             recorder = nil
+            transcriptionCoordinator = nil
+            isTranscribing = false
+            liveTranscriptDocument = nil
             try? FileManager.default.removeItem(at: outputURL)
             currentRecordingBaseName = nil
             currentRecordingURL = nil
@@ -298,6 +337,30 @@ public final class AppViewModel {
             try await recorder?.stop()
             if let baseName = currentRecordingBaseName, let url = currentRecordingURL {
                 if await recordedFileExists(url) {
+                    if let transcriptionCoordinator {
+                        do {
+                            let transcript = try await transcriptionCoordinator.finish()
+                            liveTranscriptDocument = transcript
+                            try sessionStore.updateTranscriptionMetadata(
+                                baseName: baseName,
+                                status: .completed,
+                                modelName: transcript.modelName,
+                                language: transcript.language,
+                                segmentCount: transcript.segments.count
+                            )
+                            AppLog.info("Transcription completed for \(baseName), segments=\(transcript.segments.count)", category: .recording)
+                        } catch {
+                            handleTranscriptionError(error)
+                            try? sessionStore.updateTranscriptionMetadata(
+                                baseName: baseName,
+                                status: .failed,
+                                modelName: config.localTranscriptionModel,
+                                language: config.localTranscriptionLanguage,
+                                segmentCount: liveTranscriptDocument?.segments.count ?? 0,
+                                error: String(error.localizedDescription.prefix(200))
+                            )
+                        }
+                    }
                     try sessionStore.updateRecordingMetadata(
                         baseName: baseName,
                         duration: recordingDuration,
@@ -318,6 +381,8 @@ public final class AppViewModel {
         }
 
         recorder = nil
+        transcriptionCoordinator = nil
+        isTranscribing = false
         isRecording = false
         currentRecordingBaseName = nil
         currentRecordingURL = nil
@@ -371,6 +436,7 @@ public final class AppViewModel {
                 let result = try await self.aiClient.generateReport(
                     videoURL: session.videoURL,
                     audioURLs: session.audioURLs,
+                    transcript: self.transcriptContext(for: session, config: snapshotConfig),
                     config: snapshotConfig,
                     agent: agent
                 )
@@ -437,6 +503,30 @@ public final class AppViewModel {
         return (try? sessionStore.loadReportText(url: url)) ?? ""
     }
 
+    public func transcriptDocument(for session: MeetingSession) -> TranscriptDocument? {
+        if liveTranscriptDocument?.baseName == session.baseName {
+            return liveTranscriptDocument
+        }
+        guard let url = session.transcriptURL else {
+            return nil
+        }
+        return try? sessionStore.loadTranscript(url: url)
+    }
+
+    public func loadTranscriptMarkdown(for session: MeetingSession) -> String {
+        if let liveTranscriptDocument, liveTranscriptDocument.baseName == session.baseName {
+            return liveTranscriptDocument.timestampedMarkdown
+        }
+        if let url = session.transcriptMarkdownURL,
+           let text = try? sessionStore.loadTranscriptMarkdown(url: url) {
+            return text
+        }
+        if let document = transcriptDocument(for: session) {
+            return document.timestampedMarkdown
+        }
+        return ""
+    }
+
     public func copyReport(agentID: String) {
         let text = loadReportText(agentID: agentID)
         NSPasteboard.general.clearContents()
@@ -463,6 +553,18 @@ public final class AppViewModel {
         }
         if !config.agents.contains(where: { $0.id == config.activeAgentID }) {
             config.activeAgentID = config.agents.first?.id ?? "default"
+        }
+        if WhisperModelName(rawValue: config.localTranscriptionModel) == nil {
+            config.localTranscriptionModel = WhisperModelName.tinyQ5.rawValue
+        }
+        if config.localTranscriptionThreadCount < 1 {
+            config.localTranscriptionThreadCount = 1
+        }
+        if config.localTranscriptionThreadCount > 4 {
+            config.localTranscriptionThreadCount = 4
+        }
+        if config.localTranscriptionLanguage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            config.localTranscriptionLanguage = "auto"
         }
     }
 
@@ -497,11 +599,52 @@ public final class AppViewModel {
                 try? sessionStore.deleteArtifacts(baseName: baseName)
             }
             recorder = nil
+            transcriptionCoordinator = nil
+            isTranscribing = false
+            liveTranscriptDocument = nil
             currentRecordingBaseName = nil
             currentRecordingURL = nil
             refreshSessions()
             AppLog.error("Recorder event didFail: \(message)", category: .recording)
         }
+    }
+
+    private func handleTranscriptionError(_ error: any Error) {
+        transcriptionErrorMessage = error.localizedDescription
+        isTranscribing = false
+        AppLog.warning("Transcription failed: \(error.localizedDescription)", category: .recording)
+    }
+
+    private func makeAudioHandler(coordinator: RealtimeTranscriptionCoordinator?) -> ScreenRecordingService.AudioHandler? {
+        guard let coordinator else {
+            return nil
+        }
+        return { [weak self] chunk in
+            Task {
+                do {
+                    try await coordinator.accept(chunk)
+                } catch {
+                    await MainActor.run {
+                        self?.handleTranscriptionError(error)
+                    }
+                }
+            }
+        }
+    }
+
+    private func transcriptContext(for session: MeetingSession, config: AppConfig) -> AITranscriptContext? {
+        guard config.attachTranscriptToAI else {
+            return nil
+        }
+
+        let text = loadTranscriptMarkdown(for: session).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            return nil
+        }
+        return AITranscriptContext(
+            text: text,
+            fileName: session.transcriptMarkdownURL?.lastPathComponent ?? "\(session.baseName)_transcript.md"
+        )
     }
 
     private func missingPermissionNames() -> String {

@@ -1,5 +1,5 @@
 {
-  "originHash" : "9cf7579085b63cc6b6ac15c270a20738c301db9291c3b57415034bc455cdff08",
+  "originHash" : "e650f26ca2dff3468f41b5e009a6d1aabda783aaae66e38ee8e11eae7b129526",
   "pins" : [
     {
       "identity" : "collectionconcurrencykit",
@@ -80,6 +80,14 @@
       "state" : {
         "revision" : "a853604c9e9a83ad9954c7e3d2a565273982471f",
         "version" : "7.0.2"
+      }
+    },
+    {
+      "identity" : "whisper.spm",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ggml-org/whisper.spm",
+      "state" : {
+        "revision" : "a2085436c2eb796af90956b62bd64731f5e5b823"
       }
     },
     {

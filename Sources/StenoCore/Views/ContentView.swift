@@ -215,6 +215,7 @@ private struct DetailView: View {
                         Text(agentName(agentID)).tag("report:\(agentID)")
                     }
                     Text("Player").tag("player")
+                    Text("Transcript").tag("transcript")
                     Text("Info").tag("info")
                 }
                 .pickerStyle(.segmented)
@@ -223,6 +224,8 @@ private struct DetailView: View {
                 switch viewModel.selectedTabID {
                 case "player":
                     PlayerPane(session: session)
+                case "transcript":
+                    TranscriptPane(viewModel: viewModel, session: session)
                 case "info":
                     InfoPane(session: session)
                 default:
@@ -285,6 +288,97 @@ private struct DetailView: View {
 
     private func agentName(_ agentID: String) -> String {
         viewModel.config.agent(id: agentID)?.name ?? agentID
+    }
+}
+
+private struct TranscriptPane: View {
+    @Bindable var viewModel: AppViewModel
+    var session: MeetingSession
+    @State private var searchText = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                if viewModel.isTranscribing, viewModel.liveTranscriptDocument?.baseName == session.baseName {
+                    Label("Transcribing", systemImage: "waveform")
+                        .foregroundStyle(.secondary)
+                }
+                if let error = viewModel.transcriptionErrorMessage, viewModel.liveTranscriptDocument?.baseName == session.baseName {
+                    Label(error, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(viewModel.loadTranscriptMarkdown(for: session), forType: .string)
+                    viewModel.statusMessage = "Transcript copied"
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+                .disabled(viewModel.loadTranscriptMarkdown(for: session).isEmpty)
+            }
+            .padding(.horizontal)
+            .padding(.bottom, 8)
+
+            if let document = viewModel.transcriptDocument(for: session), !document.sortedSegments.isEmpty {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        ForEach(filteredSegments(document.sortedSegments)) { segment in
+                            TranscriptSegmentRow(segment: segment)
+                        }
+                    }
+                    .frame(maxWidth: 860, alignment: .leading)
+                    .padding(.horizontal, 36)
+                    .padding(.vertical, 24)
+                }
+                .searchable(text: $searchText, prompt: "Search transcript")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ContentUnavailableView(
+                    "Transcript Unavailable",
+                    systemImage: "text.bubble",
+                    description: Text(viewModel.config.localTranscriptionEnabled ? "Transcript will appear while recording audio is processed." : "Local Whisper transcription is disabled in Settings.")
+                )
+            }
+        }
+    }
+
+    private func filteredSegments(_ segments: [TranscriptSegment]) -> [TranscriptSegment] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            return segments
+        }
+        return segments.filter { $0.text.localizedCaseInsensitiveContains(query) }
+    }
+}
+
+private struct TranscriptSegmentRow: View {
+    var segment: TranscriptSegment
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(timestamp)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Text(segment.source.displayName)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 120, alignment: .leading)
+
+            Text(segment.text)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var timestamp: String {
+        let start = StenoFormatters.duration(Int(segment.startTimeSeconds.rounded(.down)))
+        let end = StenoFormatters.duration(Int(segment.endTimeSeconds.rounded(.up)))
+        return "\(start)-\(end)"
     }
 }
 
@@ -370,6 +464,19 @@ private struct InfoPane: View {
                     }
                 }
 
+                if let transcription = session.metadata.transcription {
+                    InfoSection(title: "Transcription") {
+                        InfoRow(label: "Status", value: transcription.status.rawValue)
+                        InfoRow(label: "Model", value: transcription.modelName)
+                        InfoRow(label: "Language", value: transcription.language)
+                        InfoRow(label: "Segments", value: "\(transcription.segmentCount)")
+                        InfoRow(label: "Transcript", value: transcription.markdownPath)
+                        if let error = transcription.error {
+                            InfoRow(label: "Error", value: error)
+                        }
+                    }
+                }
+
                 if let reports = session.metadata.reports, !reports.isEmpty {
                     InfoSection(title: "AI Reports") {
                         ForEach(reports) { report in
@@ -389,7 +496,7 @@ private struct InfoPane: View {
                     }
                 }
 
-                if session.metadata.recording == nil && (session.metadata.reports ?? []).isEmpty {
+                if session.metadata.recording == nil && session.metadata.transcription == nil && (session.metadata.reports ?? []).isEmpty {
                     ContentUnavailableView("No Metadata", systemImage: "info.circle")
                 }
             }

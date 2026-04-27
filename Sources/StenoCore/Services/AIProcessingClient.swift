@@ -85,18 +85,24 @@ public actor AIProcessingClient {
     }
 
     /// Generates a meeting protocol using the selected provider while preserving the shared prompt contract.
-    public func generateReport(videoURL: URL, audioURLs: [URL], config: AppConfig, agent: Agent) async throws -> AIProcessingResult {
+    public func generateReport(
+        videoURL: URL,
+        audioURLs: [URL],
+        transcript: AITranscriptContext?,
+        config: AppConfig,
+        agent: Agent
+    ) async throws -> AIProcessingResult {
         let model = try selectedAllowedModel(config: config)
         try requireCredentials(config: config, providerID: model.providerID)
         try await verifyDynamicVideoCapabilityIfNeeded(config: config, model: model)
 
         switch model.providerID {
         case .gemini:
-            return try await geminiClient.generateReport(videoURL: videoURL, audioURLs: audioURLs, config: config, agent: agent)
+            return try await geminiClient.generateReport(videoURL: videoURL, audioURLs: audioURLs, transcript: transcript, config: config, agent: agent)
         case .kimi, .qwen, .openRouter:
-            return try await openAICompatibleClient.generateReport(videoURL: videoURL, config: config, model: model, agent: agent)
+            return try await openAICompatibleClient.generateReport(videoURL: videoURL, transcript: transcript, config: config, model: model, agent: agent)
         case .amazonBedrock:
-            return try await bedrockClient.generateReport(videoURL: videoURL, config: config, model: model, agent: agent)
+            return try await bedrockClient.generateReport(videoURL: videoURL, transcript: transcript, config: config, model: model, agent: agent)
         }
     }
 

@@ -97,19 +97,28 @@ public struct SessionMetadata: Codable, Hashable, Sendable {
     public var name: String?
     public var createdAt: String?
     public var recording: RecordingInfo?
+    public var transcription: TranscriptionInfo?
     public var reports: [ReportInfo]?
 
     enum CodingKeys: String, CodingKey {
         case name
         case createdAt = "created_at"
         case recording
+        case transcription
         case reports
     }
 
-    public init(name: String? = nil, createdAt: String? = nil, recording: RecordingInfo? = nil, reports: [ReportInfo]? = nil) {
+    public init(
+        name: String? = nil,
+        createdAt: String? = nil,
+        recording: RecordingInfo? = nil,
+        transcription: TranscriptionInfo? = nil,
+        reports: [ReportInfo]? = nil
+    ) {
         self.name = name
         self.createdAt = createdAt
         self.recording = recording
+        self.transcription = transcription
         self.reports = reports
     }
 }
@@ -120,6 +129,8 @@ public struct MeetingSession: Identifiable, Hashable, Sendable {
     public var baseURL: URL
     public var videoURL: URL
     public var metadataURL: URL
+    public var transcriptURL: URL?
+    public var transcriptMarkdownURL: URL?
     public var audioURLs: [URL]
     public var reportURLsByAgentID: [String: URL]
     public var metadata: SessionMetadata
@@ -130,6 +141,8 @@ public struct MeetingSession: Identifiable, Hashable, Sendable {
         baseURL: URL,
         videoURL: URL,
         metadataURL: URL,
+        transcriptURL: URL?,
+        transcriptMarkdownURL: URL?,
         audioURLs: [URL],
         reportURLsByAgentID: [String: URL],
         metadata: SessionMetadata,
@@ -139,6 +152,8 @@ public struct MeetingSession: Identifiable, Hashable, Sendable {
         self.baseURL = baseURL
         self.videoURL = videoURL
         self.metadataURL = metadataURL
+        self.transcriptURL = transcriptURL
+        self.transcriptMarkdownURL = transcriptMarkdownURL
         self.audioURLs = audioURLs
         self.reportURLsByAgentID = reportURLsByAgentID
         self.metadata = metadata
@@ -163,7 +178,7 @@ public extension MeetingSession {
     }
 
     var totalSizeMB: Double {
-        let urls = [videoURL, metadataURL] + audioURLs + Array(reportURLsByAgentID.values)
+        let urls = [videoURL, metadataURL] + [transcriptURL, transcriptMarkdownURL].compactMap(\.self) + audioURLs + Array(reportURLsByAgentID.values)
         let totalBytes = urls.reduce(Int64(0)) { result, url in
             let value = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
             return result + value

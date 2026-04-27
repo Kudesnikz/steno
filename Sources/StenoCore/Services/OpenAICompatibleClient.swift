@@ -23,10 +23,16 @@ public actor OpenAICompatibleClient {
     }
 
     /// Sends the meeting video as a base64 `video_url` content part.
-    public func generateReport(videoURL: URL, config: AppConfig, model: AIModelReference, agent: Agent) async throws -> AIProcessingResult {
+    public func generateReport(
+        videoURL: URL,
+        transcript: AITranscriptContext?,
+        config: AppConfig,
+        model: AIModelReference,
+        agent: Agent
+    ) async throws -> AIProcessingResult {
         let start = Date()
         let videoDataURL = try videoURL.dataURL
-        let prompt = AIPromptBuilder.meetingAnalysisPrompt(videoURL: videoURL)
+        let prompt = AIPromptBuilder.meetingAnalysisPrompt(videoURL: videoURL, transcript: transcript)
         let body = OpenAIChatRequest(
             model: model.modelID,
             messages: [

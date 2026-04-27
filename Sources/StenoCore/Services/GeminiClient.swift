@@ -109,7 +109,13 @@ public actor GeminiClient {
         return GeminiConnectionCheckResult(baseURL: normalizedBase, modelName: config.modelName)
     }
 
-    public func generateReport(videoURL: URL, audioURLs: [URL], config: AppConfig, agent: Agent) async throws -> AIProcessingResult {
+    public func generateReport(
+        videoURL: URL,
+        audioURLs: [URL],
+        transcript: AITranscriptContext?,
+        config: AppConfig,
+        agent: Agent
+    ) async throws -> AIProcessingResult {
         guard !config.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             AppLog.warning("AI generation requested without API key", category: .ai)
             throw GeminiClientError.missingAPIKey
@@ -136,7 +142,7 @@ public actor GeminiClient {
                 readyFiles.append(try await waitUntilReady(file: file, apiKey: config.apiKey, baseURL: config.baseURL))
             }
 
-            let response = try await generateContent(files: readyFiles, videoURL: videoURL, config: config, agent: agent)
+            let response = try await generateContent(files: readyFiles, videoURL: videoURL, transcript: transcript, config: config, agent: agent)
             guard let text = response.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
                 AppLog.error("AI generation returned empty response", category: .ai)
                 throw GeminiClientError.emptyResponse
@@ -234,9 +240,15 @@ public actor GeminiClient {
         try validate(response, data: data, context: "DELETE \(sanitizedEndpoint(url))")
     }
 
-    private func generateContent(files: [GeminiFile], videoURL: URL, config: AppConfig, agent: Agent) async throws -> GenerateContentResponse {
+    private func generateContent(
+        files: [GeminiFile],
+        videoURL: URL,
+        transcript: AITranscriptContext?,
+        config: AppConfig,
+        agent: Agent
+    ) async throws -> GenerateContentResponse {
         let url = try apiEndpoint(path: "v1beta/models/\(config.modelName):generateContent", baseURL: config.baseURL, apiKey: config.apiKey)
-        let prompt = AIPromptBuilder.meetingAnalysisPrompt(videoURL: videoURL)
+        let prompt = AIPromptBuilder.meetingAnalysisPrompt(videoURL: videoURL, transcript: transcript)
 
         let parts = files.map {
             ContentPart(fileData: FileData(mimeType: $0.mimeType, fileURI: $0.uri), text: nil)
