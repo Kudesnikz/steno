@@ -44,6 +44,13 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertEqual(preset.bitrateDescription, "3 Mbps")
         XCTAssertEqual(preset.estimatedMegabytes(durationSeconds: 60), 22.5, accuracy: 0.001)
     }
+
+    func testVideoQualityPresetFrameRatesMatchRecordingPolicy() throws {
+        XCTAssertEqual(try XCTUnwrap(AppConfig.qualityPresets["Low"]).fps, 1)
+        XCTAssertEqual(try XCTUnwrap(AppConfig.qualityPresets["Medium"]).fps, 5)
+        XCTAssertEqual(try XCTUnwrap(AppConfig.qualityPresets["High"]).fps, 15)
+        XCTAssertEqual(try XCTUnwrap(AppConfig.qualityPresets["Ultra"]).fps, 30)
+    }
 }
 
 private func temporaryDirectory() throws -> URL {

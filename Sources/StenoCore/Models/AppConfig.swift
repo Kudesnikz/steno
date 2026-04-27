@@ -221,10 +221,10 @@ public extension AppConfig {
     }
 
     static let qualityPresets: [String: VideoQualityPreset] = [
-        "Low": VideoQualityPreset(width: 960, height: 540, fps: 5, bitrate: 1_000_000),
-        "Medium": VideoQualityPreset(width: 1280, height: 720, fps: 10, bitrate: 3_000_000),
-        "High": VideoQualityPreset(width: 1920, height: 1080, fps: 30, bitrate: 8_000_000),
-        "Ultra": VideoQualityPreset(width: 2560, height: 1440, fps: 60, bitrate: 25_000_000)
+        "Low": VideoQualityPreset(width: 960, height: 540, fps: 1, bitrate: 1_000_000),
+        "Medium": VideoQualityPreset(width: 1280, height: 720, fps: 5, bitrate: 3_000_000),
+        "High": VideoQualityPreset(width: 1920, height: 1080, fps: 15, bitrate: 8_000_000),
+        "Ultra": VideoQualityPreset(width: 2560, height: 1440, fps: 30, bitrate: 25_000_000)
     ]
 
     static let qualityPresetOrder = ["Low", "Medium", "High", "Ultra"]
