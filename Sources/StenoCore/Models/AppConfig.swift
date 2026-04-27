@@ -24,6 +24,25 @@ public struct VideoQualityPreset: Codable, Hashable, Sendable {
         self.fps = fps
         self.bitrate = bitrate
     }
+
+    public var resolutionDescription: String {
+        "\(width)x\(height)"
+    }
+
+    public var bitrateMbps: Double {
+        Double(bitrate) / 1_000_000
+    }
+
+    public var bitrateDescription: String {
+        if bitrate % 1_000_000 == 0 {
+            return "\(bitrate / 1_000_000) Mbps"
+        }
+        return String(format: "%.1f Mbps", bitrateMbps)
+    }
+
+    public func estimatedMegabytes(durationSeconds: Int) -> Double {
+        Double(bitrate) / 8 * Double(durationSeconds) / 1_000_000
+    }
 }
 
 public struct AppConfig: Codable, Hashable, Sendable {
@@ -207,6 +226,8 @@ public extension AppConfig {
         "High": VideoQualityPreset(width: 1920, height: 1080, fps: 30, bitrate: 8_000_000),
         "Ultra": VideoQualityPreset(width: 2560, height: 1440, fps: 60, bitrate: 25_000_000)
     ]
+
+    static let qualityPresetOrder = ["Low", "Medium", "High", "Ultra"]
 
     static let defaultAgents: [Agent] = [
         Agent(

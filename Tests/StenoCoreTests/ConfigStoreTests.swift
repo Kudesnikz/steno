@@ -36,6 +36,14 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertEqual(result.config.modelName, AppConfig.default.modelName)
         XCTAssertEqual(result.config.agents.count, AppConfig.defaultAgents.count)
     }
+
+    func testVideoQualityEstimateUsesConfiguredBitrate() {
+        let preset = VideoQualityPreset(width: 1280, height: 720, fps: 10, bitrate: 3_000_000)
+
+        XCTAssertEqual(preset.resolutionDescription, "1280x720")
+        XCTAssertEqual(preset.bitrateDescription, "3 Mbps")
+        XCTAssertEqual(preset.estimatedMegabytes(durationSeconds: 60), 22.5, accuracy: 0.001)
+    }
 }
 
 private func temporaryDirectory() throws -> URL {

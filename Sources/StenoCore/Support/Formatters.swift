@@ -19,6 +19,16 @@ public enum StenoFormatters {
         String(format: "%.1f MB", value)
     }
 
+    public static func approximateFileSize(megabytes: Double) -> String {
+        if megabytes >= 1_000 {
+            return String(format: "%.1f GB", megabytes / 1_000)
+        }
+        if megabytes >= 10 {
+            return String(format: "%.0f MB", megabytes)
+        }
+        return String(format: "%.1f MB", megabytes)
+    }
+
     public static func tokens(_ value: Int) -> String {
         value.formatted(.number)
     }

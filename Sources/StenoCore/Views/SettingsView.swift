@@ -120,10 +120,13 @@ public struct SettingsView: View {
                     }
                 }
                 Picker("Качество видео", selection: $viewModel.config.videoQuality) {
-                    ForEach(AppConfig.qualityPresets.keys.sorted(), id: \.self) { quality in
-                        Text(quality).tag(quality)
+                    ForEach(AppConfig.qualityPresetOrder, id: \.self) { quality in
+                        if let preset = AppConfig.qualityPresets[quality] {
+                            Text("\(quality) (\(preset.resolutionDescription), \(preset.fps) fps)").tag(quality)
+                        }
                     }
                 }
+                videoQualityDetails
                 Toggle("Отображать время записи", isOn: $viewModel.config.showRecordingTime)
             }
 
@@ -141,6 +144,27 @@ public struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var videoQualityDetails: some View {
+        let preset = viewModel.config.preset()
+        let sizePerMinute = StenoFormatters.approximateFileSize(megabytes: preset.estimatedMegabytes(durationSeconds: 60))
+        let sizePerHour = StenoFormatters.approximateFileSize(megabytes: preset.estimatedMegabytes(durationSeconds: 3_600))
+
+        return VStack(alignment: .leading, spacing: 8) {
+            LabeledContent("Параметры") {
+                Text("\(preset.resolutionDescription) · \(preset.fps) fps · \(preset.bitrateDescription)")
+                    .foregroundStyle(.secondary)
+            }
+            LabeledContent("Размер файла") {
+                Text("примерно \(sizePerMinute)/мин · \(sizePerHour)/час")
+                    .foregroundStyle(.secondary)
+            }
+            Text("Фактический размер H.264 зависит от движения на экране, звука и содержимого записи.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     @ViewBuilder
