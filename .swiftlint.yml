@@ -1,0 +1,31 @@
+included:
+  - Sources
+excluded:
+  - .build
+  - .swiftpm
+  - dist
+  - app
+  - bin
+  - scripts
+  - Tests
+
+disabled_rules:
+  - line_length
+  - file_length
+  - type_body_length
+  - function_body_length
+  - cyclomatic_complexity
+  - multiple_closures_with_trailing_closure
+
+identifier_name:
+  min_length:
+    warning: 2
+  excluded:
+    - id
+
+type_name:
+  min_length:
+    warning: 2
+
+trailing_whitespace:
+  ignores_empty_lines: true

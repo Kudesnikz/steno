@@ -3,12 +3,9 @@ dist
 .DS_Store
 Steno.dmg
 build/
-__pycache__/
-.venv/
-.venv_test/
-venv/
+.build/
+.swiftpm/
 .agents/
-*.pyc
 .env
 Steno-arm64.dmg
 Steno-x86_64.dmg
