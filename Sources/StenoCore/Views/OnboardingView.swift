@@ -19,7 +19,7 @@ public struct OnboardingView: View {
                     .foregroundStyle(.blue)
                 Text("Настройка Steno")
                     .font(.title.weight(.semibold))
-                Text("Для записи встреч нужны права macOS и Google Gemini API Key.")
+                Text("Для записи встреч нужны права macOS и AI API Key. По умолчанию используется Gemini; провайдера можно сменить в Settings.")
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }

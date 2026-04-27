@@ -27,8 +27,19 @@ public struct VideoQualityPreset: Codable, Hashable, Sendable {
 }
 
 public struct AppConfig: Codable, Hashable, Sendable {
+    public var aiProviderID: String
     public var apiKey: String
     public var baseURL: String
+    public var openRouterAPIKey: String
+    public var openRouterBaseURL: String
+    public var kimiAPIKey: String
+    public var kimiBaseURL: String
+    public var qwenAPIKey: String
+    public var qwenBaseURL: String
+    public var awsAccessKeyID: String
+    public var awsSecretAccessKey: String
+    public var awsSessionToken: String
+    public var awsRegion: String
     public var videoDeviceIndex: String
     public var videoDeviceName: String
     public var modelName: String
@@ -49,8 +60,19 @@ public struct AppConfig: Codable, Hashable, Sendable {
     public var agents: [Agent]
 
     enum CodingKeys: String, CodingKey {
+        case aiProviderID = "ai_provider_id"
         case apiKey = "api_key"
         case baseURL = "base_url"
+        case openRouterAPIKey = "openrouter_api_key"
+        case openRouterBaseURL = "openrouter_base_url"
+        case kimiAPIKey = "kimi_api_key"
+        case kimiBaseURL = "kimi_base_url"
+        case qwenAPIKey = "qwen_api_key"
+        case qwenBaseURL = "qwen_base_url"
+        case awsAccessKeyID = "aws_access_key_id"
+        case awsSecretAccessKey = "aws_secret_access_key"
+        case awsSessionToken = "aws_session_token"
+        case awsRegion = "aws_region"
         case videoDeviceIndex = "video_device_idx"
         case videoDeviceName = "video_device_name"
         case modelName = "model_name"
@@ -72,8 +94,19 @@ public struct AppConfig: Codable, Hashable, Sendable {
     }
 
     public init(
+        aiProviderID: String,
         apiKey: String,
         baseURL: String,
+        openRouterAPIKey: String,
+        openRouterBaseURL: String,
+        kimiAPIKey: String,
+        kimiBaseURL: String,
+        qwenAPIKey: String,
+        qwenBaseURL: String,
+        awsAccessKeyID: String,
+        awsSecretAccessKey: String,
+        awsSessionToken: String,
+        awsRegion: String,
         videoDeviceIndex: String,
         videoDeviceName: String,
         modelName: String,
@@ -93,8 +126,19 @@ public struct AppConfig: Codable, Hashable, Sendable {
         activeAgentID: String,
         agents: [Agent]
     ) {
+        self.aiProviderID = aiProviderID
         self.apiKey = apiKey
         self.baseURL = baseURL
+        self.openRouterAPIKey = openRouterAPIKey
+        self.openRouterBaseURL = openRouterBaseURL
+        self.kimiAPIKey = kimiAPIKey
+        self.kimiBaseURL = kimiBaseURL
+        self.qwenAPIKey = qwenAPIKey
+        self.qwenBaseURL = qwenBaseURL
+        self.awsAccessKeyID = awsAccessKeyID
+        self.awsSecretAccessKey = awsSecretAccessKey
+        self.awsSessionToken = awsSessionToken
+        self.awsRegion = awsRegion
         self.videoDeviceIndex = videoDeviceIndex
         self.videoDeviceName = videoDeviceName
         self.modelName = modelName
@@ -118,11 +162,22 @@ public struct AppConfig: Codable, Hashable, Sendable {
     public init(from decoder: Decoder) throws {
         let defaults = Self.default
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        aiProviderID = try container.decodeIfPresent(String.self, forKey: .aiProviderID) ?? defaults.aiProviderID
         apiKey = try container.decodeIfPresent(String.self, forKey: .apiKey) ?? defaults.apiKey
         baseURL = try container.decodeIfPresent(String.self, forKey: .baseURL) ?? defaults.baseURL
+        openRouterAPIKey = try container.decodeIfPresent(String.self, forKey: .openRouterAPIKey) ?? defaults.openRouterAPIKey
+        openRouterBaseURL = try container.decodeIfPresent(String.self, forKey: .openRouterBaseURL) ?? defaults.openRouterBaseURL
+        kimiAPIKey = try container.decodeIfPresent(String.self, forKey: .kimiAPIKey) ?? defaults.kimiAPIKey
+        kimiBaseURL = try container.decodeIfPresent(String.self, forKey: .kimiBaseURL) ?? defaults.kimiBaseURL
+        qwenAPIKey = try container.decodeIfPresent(String.self, forKey: .qwenAPIKey) ?? defaults.qwenAPIKey
+        qwenBaseURL = try container.decodeIfPresent(String.self, forKey: .qwenBaseURL) ?? defaults.qwenBaseURL
+        awsAccessKeyID = try container.decodeIfPresent(String.self, forKey: .awsAccessKeyID) ?? defaults.awsAccessKeyID
+        awsSecretAccessKey = try container.decodeIfPresent(String.self, forKey: .awsSecretAccessKey) ?? defaults.awsSecretAccessKey
+        awsSessionToken = try container.decodeIfPresent(String.self, forKey: .awsSessionToken) ?? defaults.awsSessionToken
+        awsRegion = try container.decodeIfPresent(String.self, forKey: .awsRegion) ?? defaults.awsRegion
         videoDeviceIndex = try container.decodeIfPresent(String.self, forKey: .videoDeviceIndex) ?? defaults.videoDeviceIndex
         videoDeviceName = try container.decodeIfPresent(String.self, forKey: .videoDeviceName) ?? defaults.videoDeviceName
-        modelName = try container.decodeIfPresent(String.self, forKey: .modelName) ?? defaults.modelName
+        modelName = AIModelCatalog.normalizedModelID(try container.decodeIfPresent(String.self, forKey: .modelName) ?? defaults.modelName)
         saveDirectory = try container.decodeIfPresent(String.self, forKey: .saveDirectory) ?? defaults.saveDirectory
         videoQuality = try container.decodeIfPresent(String.self, forKey: .videoQuality) ?? defaults.videoQuality
         showRecordingTime = try container.decodeIfPresent(Bool.self, forKey: .showRecordingTime) ?? defaults.showRecordingTime
@@ -142,12 +197,9 @@ public struct AppConfig: Codable, Hashable, Sendable {
 }
 
 public extension AppConfig {
-    static let aiModels = [
-        "gemini-3-flash-preview",
-        "gemini-3.1-pro-preview",
-        "gemini-flash-latest",
-        "gemini-flash-lite-latest"
-    ]
+    static var aiModels: [String] {
+        AIModelCatalog.providerModels(.gemini).map(\.modelID)
+    }
 
     static let qualityPresets: [String: VideoQualityPreset] = [
         "Low": VideoQualityPreset(width: 960, height: 540, fps: 5, bitrate: 1_000_000),
@@ -237,8 +289,19 @@ public extension AppConfig {
     ]
 
     static let `default` = AppConfig(
+        aiProviderID: AIProviderID.gemini.rawValue,
         apiKey: "",
         baseURL: "https://gemini-warmup.galaypro.ru",
+        openRouterAPIKey: "",
+        openRouterBaseURL: "https://openrouter.ai/api/v1",
+        kimiAPIKey: "",
+        kimiBaseURL: "https://api.moonshot.ai/v1",
+        qwenAPIKey: "",
+        qwenBaseURL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        awsAccessKeyID: "",
+        awsSecretAccessKey: "",
+        awsSessionToken: "",
+        awsRegion: "us-east-1",
         videoDeviceIndex: "0",
         videoDeviceName: "Main Screen",
         modelName: "gemini-3-flash-preview",
@@ -269,5 +332,54 @@ public extension AppConfig {
 
     func preset() -> VideoQualityPreset {
         Self.qualityPresets[videoQuality] ?? Self.qualityPresets["Medium"]!
+    }
+}
+
+public extension AppConfig {
+    var aiProvider: AIProviderID {
+        get {
+            AIProviderID(rawValue: aiProviderID) ?? .gemini
+        }
+        set {
+            aiProviderID = newValue.rawValue
+        }
+    }
+
+    var selectedModelReference: AIModelReference? {
+        AIModelCatalog.model(providerID: aiProvider, modelID: modelName)
+    }
+
+    var selectedModelDisplayName: String {
+        selectedModelReference?.displayName ?? modelName
+    }
+
+    func apiKey(for providerID: AIProviderID) -> String {
+        switch providerID {
+        case .gemini:
+            apiKey
+        case .kimi:
+            kimiAPIKey
+        case .amazonBedrock:
+            awsAccessKeyID.isEmpty || awsSecretAccessKey.isEmpty ? "" : "\(awsAccessKeyID):\(awsSecretAccessKey)"
+        case .qwen:
+            qwenAPIKey
+        case .openRouter:
+            openRouterAPIKey
+        }
+    }
+
+    func baseURL(for providerID: AIProviderID) -> String {
+        switch providerID {
+        case .gemini:
+            baseURL
+        case .kimi:
+            kimiBaseURL
+        case .amazonBedrock:
+            "https://bedrock-runtime.\(awsRegion).amazonaws.com"
+        case .qwen:
+            qwenBaseURL
+        case .openRouter:
+            openRouterBaseURL
+        }
     }
 }

@@ -9,7 +9,7 @@
 
 ---
 
-**Steno** — это современное и легковесное приложение для macOS, созданное для записи онлайн-встреч и их последующего анализа с помощью искусственного интеллекта (Google Gemini). Приложение не только сохраняет аудио и видео, но и автоматически генерирует структурированные протоколы встреч по вашим правилам, используя встроенную систему "Агентов".
+**Steno** — это современное и легковесное приложение для macOS, созданное для записи онлайн-встреч и их последующего анализа с помощью video-capable AI моделей. Приложение не только сохраняет аудио и видео, но и автоматически генерирует структурированные протоколы встреч по вашим правилам, используя встроенную систему "Агентов".
 
 ## 💼 Ключевые возможности
 
@@ -17,7 +17,8 @@
 *   **Встроенный мультимедиа-плеер:** Нативный `AVPlayerView` позволяет просматривать сохраненные `.mp4` записи прямо в приложении.
 *   **Система Агентов (Промптов):** Создавайте разных ИИ-ассистентов ("Агентов") для любых типов встреч. Например: "Подробный протокол для Confluence", "Краткое саммари для Telegram", "Выделение только задач (Action Items)".
 *   **Оконный интерфейс в стиле Apple Notes:** Интуитивно понятное управление записями и просмотр сгенерированных протоколов с рендерингом Markdown (таблицы, списки, форматирование текста) в светлой системной теме.
-*   **Удобный Онбординг:** При первом запуске Steno проведет вас через простую настройку разрешений (Экран, Микрофон) и ввод API-ключа от Google Gemini.
+*   **Модульный AI-провайдер:** Доступны прямые API Gemini, Kimi, Amazon Bedrock, Qwen Cloud и те же модели через OpenRouter, когда OpenRouter подтверждает поддержку video input. Каталог OpenRouter и Bedrock фильтруется динамически по поддержке video input.
+*   **Удобный Онбординг:** При первом запуске Steno проведет вас через простую настройку разрешений (Экран, Микрофон) и ввод API-ключа от Google Gemini. Другие провайдеры настраиваются в Settings.
 *   **Фоновый режим и Нативный таймер:** Записывайте встречи и запускайте генерацию протоколов напрямую из строки меню (System Tray). При старте записи иконка превращается в нативный растягивающийся таймер времени записи, который идеально вписывается в интерфейс macOS.
 
 ## 🚀 Инструкция по использованию
@@ -27,7 +28,7 @@
 2. Откройте образ и перетащите `Steno.app` в папку "Программы" (Applications).
 3. Запустите приложение. Появится экран **Онбординга**, который поможет:
    * Дать разрешения на **Запись экрана** и доступ к **Микрофону**.
-   * Ввести ваш API ключ от Google Gemini (получить можно в [Google AI Studio](https://aistudio.google.com/)).
+   * Ввести ваш API ключ от Google Gemini (получить можно в [Google AI Studio](https://aistudio.google.com/)). Если нужен Kimi, Amazon Bedrock, Qwen Cloud или OpenRouter, добавьте их ключи в Settings после первого запуска.
 
 > ⚠️ **Важно:** Если при первом запуске возникает ошибка (например, предупреждение от macOS), откройте Терминал и выполните следующую команду:
 > ```bash
@@ -38,9 +39,10 @@
 1. Кликните по иконке **Шестеренки** в верхней панели или выберите "Settings..." в меню трея.
 2. Во вкладке **Общие (General)**: 
    * Выберите желаемое качество видео (Low, Medium, High, Ultra).
-   * Выберите модель Gemini (по умолчанию используется `gemini-3-flash-preview`).
+   * Выберите AI-провайдера и модель. Дорогие модели: Gemini 3.1 Pro Preview, Kimi K2.6, Amazon Nova Premier, Qwen3-VL Plus. Дешевые модели: Gemini 3.1 Flash Lite Preview, Gemini 3 Flash Preview, Amazon Nova 2 Lite, Qwen3-VL Flash.
+   * Нажмите **Обновить video-модели**, чтобы подтянуть динамический каталог и оставить только модели, где провайдер подтверждает video input.
    * Включите или отключите опцию **Отображать время записи** в строке меню.
-   * (Опционально) Настройте Base URL, если используете прокси.
+   * (Опционально) Настройте Base URL, если используете прокси или региональный endpoint.
 3. Во вкладке **Агенты (Agents)**: 
    * Добавляйте, удаляйте или редактируйте промпты, по которым ИИ будет писать для вас протоколы.
 
@@ -67,7 +69,7 @@ Steno в ветке `native_ui` мигрирован на нативный **Swi
 *   **UI:** SwiftUI, нативный `NSStatusItem` для строки меню, небольшой AppKit bridge для системных macOS API.
 *   **State:** MVVM на `@Observable`.
 *   **Запись:** `ScreenCaptureKit`, `AVFoundation`, `CoreMedia`.
-*   **AI:** Gemini REST API через `URLSession` и `Codable`.
+*   **AI:** Модульные клиенты Gemini Files API, OpenAI-compatible Chat Completions (Kimi/Qwen/OpenRouter) и Amazon Bedrock Converse через `URLSession` и `Codable`.
 *   **Persistence:** JSON-файлы в `~/.steno` и папке записей.
 *   **Логи:** `os.Logger` плюс файл `~/.steno/steno.log`.
 *   **Тесты:** XCTest.
@@ -79,7 +81,7 @@ Steno в ветке `native_ui` мигрирован на нативный **Swi
 *   [`Sources/Steno/`](Sources/Steno/) — точка входа macOS-приложения.
 *   [`Sources/StenoCore/Models/`](Sources/StenoCore/Models/) — `Codable` модели конфигурации и сессий.
 *   [`Sources/StenoCore/Stores/`](Sources/StenoCore/Stores/) — файловое хранение конфигурации и сессий.
-*   [`Sources/StenoCore/Services/`](Sources/StenoCore/Services/) — запись экрана, Gemini API, permissions, legacy migration.
+*   [`Sources/StenoCore/Services/`](Sources/StenoCore/Services/) — запись экрана, AI clients/catalog, permissions, legacy migration.
 *   [`Sources/StenoCore/ViewModels/`](Sources/StenoCore/ViewModels/) — `@Observable` view model.
 *   [`Sources/StenoCore/Views/`](Sources/StenoCore/Views/) — SwiftUI views.
 *   [`Sources/StenoCore/Support/`](Sources/StenoCore/Support/) — logging, paths, formatters.

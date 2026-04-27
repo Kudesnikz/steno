@@ -15,6 +15,8 @@ public final class AppViewModel {
     public var recordingDuration = 0
     public var statusMessage: String?
     public var errorMessage: String?
+    public var availableAIModels: [AIModelReference] = AIModelCatalog.fallbackModels
+    public var isRefreshingAIModels = false
     public var showOnboarding = false
     public var showSettings = false
     public var permissionState = PermissionState(hasScreenCapture: false, hasMicrophone: false)
@@ -22,7 +24,8 @@ public final class AppViewModel {
     @ObservationIgnored private let configStore: ConfigStore
     @ObservationIgnored private var sessionStore = SessionStore(saveDirectory: URL(fileURLWithPath: AppConfig.default.saveDirectory))
     @ObservationIgnored private let permissionsService: PermissionsService
-    @ObservationIgnored private let geminiClient: GeminiClient
+    @ObservationIgnored private let aiClient: AIProcessingClient
+    @ObservationIgnored private let modelCatalogService: AIModelCatalogService
     @ObservationIgnored private var recorder: ScreenRecordingService?
     @ObservationIgnored private var recordingTimerTask: Task<Void, Never>?
     @ObservationIgnored private var aiTask: Task<Void, Never>?
@@ -32,11 +35,13 @@ public final class AppViewModel {
     public init(
         configStore: ConfigStore = ConfigStore(),
         permissionsService: PermissionsService = PermissionsService(),
-        geminiClient: GeminiClient = GeminiClient()
+        aiClient: AIProcessingClient = AIProcessingClient(),
+        modelCatalogService: AIModelCatalogService = AIModelCatalogService()
     ) {
         self.configStore = configStore
         self.permissionsService = permissionsService
-        self.geminiClient = geminiClient
+        self.aiClient = aiClient
+        self.modelCatalogService = modelCatalogService
 
         var loadedConfig = AppConfig.default
         var shouldShowOnboarding = true
@@ -46,7 +51,7 @@ public final class AppViewModel {
         do {
             let loadResult = try configStore.load()
             loadedConfig = loadResult.config
-            shouldShowOnboarding = !loadResult.didFindExistingConfig || loadedConfig.apiKey.isEmpty
+            shouldShowOnboarding = !loadResult.didFindExistingConfig || loadedConfig.apiKey(for: loadedConfig.aiProvider).isEmpty
             if loadResult.didMigrateLegacyConfig {
                 initialStatus = "Legacy config migrated to ~/.steno/config.json"
             }
@@ -63,6 +68,9 @@ public final class AppViewModel {
         sessionStore = SessionStore(saveDirectory: URL(fileURLWithPath: loadedConfig.saveDirectory))
         permissionState = permissionsService.currentState()
         refreshSessions()
+        Task {
+            await refreshAIModels()
+        }
         AppLog.info("AppViewModel initialized; onboarding=\(showOnboarding)", category: .app)
     }
 
@@ -122,9 +130,55 @@ public final class AppViewModel {
 
     public func completeOnboarding(apiKey: String) {
         config.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        config.aiProvider = .gemini
         saveConfig()
         showOnboarding = false
         AppLog.info("Onboarding completed", category: .ui)
+    }
+
+    public func selectAIProvider(_ providerID: String) {
+        guard let provider = AIProviderID(rawValue: providerID) else {
+            config.aiProvider = .gemini
+            config.modelName = AIModelCatalog.defaultModelID(for: .gemini)
+            return
+        }
+
+        config.aiProvider = provider
+        if AIModelCatalog.model(providerID: provider, modelID: config.modelName) == nil {
+            config.modelName = AIModelCatalog.defaultModelID(for: provider)
+        }
+        Task {
+            await refreshAIModels()
+        }
+    }
+
+    public func refreshAIModels() async {
+        guard !isRefreshingAIModels else {
+            return
+        }
+        isRefreshingAIModels = true
+        let snapshot = config
+        AppLog.info("Refreshing AI model catalog provider=\(snapshot.aiProvider.displayName)", category: .ai)
+        let result = await modelCatalogService.refreshAvailableModels(config: snapshot)
+        availableAIModels = result.models.isEmpty ? AIModelCatalog.fallbackModels : result.models
+        if !availableAIModels.contains(where: { $0.providerID == config.aiProvider && $0.modelID == config.modelName }) {
+            config.modelName = modelsForSelectedProvider.first?.modelID ?? AIModelCatalog.defaultModelID(for: config.aiProvider)
+        }
+        if result.warnings.isEmpty {
+            statusMessage = "AI models refreshed"
+        } else {
+            statusMessage = "AI models refreshed with warnings"
+            AppLog.warning("AI model refresh warnings: \(result.warnings.joined(separator: " | "))", category: .ai)
+        }
+        isRefreshingAIModels = false
+    }
+
+    public var modelsForSelectedProvider: [AIModelReference] {
+        let models = availableAIModels.filter { $0.providerID == config.aiProvider }
+        if models.isEmpty, config.aiProvider != .openRouter {
+            return AIModelCatalog.providerModels(config.aiProvider)
+        }
+        return models
     }
 
     public func refreshSessions() {
@@ -183,8 +237,8 @@ public final class AppViewModel {
             )
             return
         }
-        guard !config.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            errorMessage = "Please set Google API Key in Settings"
+        guard !config.apiKey(for: config.aiProvider).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            errorMessage = "Please set \(config.aiProvider.displayName) credentials in Settings"
             showSettings = true
             AppLog.warning("Recording blocked because API key is missing", category: .recording)
             return
@@ -276,7 +330,7 @@ public final class AppViewModel {
         }
 
         isCheckingAIConnection = true
-        statusMessage = "Checking Gemini connection"
+        statusMessage = "Checking AI connection"
         let snapshotConfig = config
         AppLog.info("AI connection check requested model=\(snapshotConfig.modelName)", category: .ai)
         Task { [weak self] in
@@ -284,14 +338,14 @@ public final class AppViewModel {
                 return
             }
             do {
-                let result = try await self.geminiClient.validateConfiguration(config: snapshotConfig)
-                self.statusMessage = "Gemini connection OK: \(result.modelName)"
+                let result = try await self.aiClient.validateConfiguration(config: snapshotConfig)
+                self.statusMessage = "\(result.providerName) connection OK: \(result.modelName)"
                 self.errorMessage = nil
                 AppLog.info("AI connection check completed baseURL=\(result.baseURL) model=\(result.modelName)", category: .ai)
             } catch {
-                let safeMessage = self.masked(error.localizedDescription, apiKey: snapshotConfig.apiKey)
-                self.statusMessage = "Gemini connection failed"
-                self.errorMessage = "Gemini check failed: \(safeMessage)"
+                let safeMessage = self.masked(error.localizedDescription, config: snapshotConfig)
+                self.statusMessage = "AI connection failed"
+                self.errorMessage = "AI check failed: \(safeMessage)"
                 AppLog.error("AI connection check failed: \(safeMessage)", category: .ai)
             }
             self.isCheckingAIConnection = false
@@ -314,7 +368,7 @@ public final class AppViewModel {
                 return
             }
             do {
-                let result = try await self.geminiClient.generateReport(
+                let result = try await self.aiClient.generateReport(
                     videoURL: session.videoURL,
                     audioURLs: session.audioURLs,
                     config: snapshotConfig,
@@ -348,7 +402,7 @@ public final class AppViewModel {
                 self.statusMessage = "AI processing cancelled"
                 AppLog.warning("AI processing cancelled", category: .ai)
             } catch {
-                let safeMessage = self.masked(error.localizedDescription, apiKey: snapshotConfig.apiKey)
+                let safeMessage = self.masked(error.localizedDescription, config: snapshotConfig)
                 let report = ReportInfo(
                     agentID: agent.id,
                     agentName: agent.name,
@@ -397,6 +451,13 @@ public final class AppViewModel {
     }
 
     private func normalizeConfig() {
+        if AIProviderID(rawValue: config.aiProviderID) == nil {
+            config.aiProvider = .gemini
+        }
+        config.modelName = AIModelCatalog.normalizedModelID(config.modelName)
+        if AIModelCatalog.model(providerID: config.aiProvider, modelID: config.modelName) == nil {
+            config.modelName = AIModelCatalog.defaultModelID(for: config.aiProvider)
+        }
         if config.agents.isEmpty {
             config.agents = AppConfig.defaultAgents
         }
@@ -464,10 +525,19 @@ public final class AppViewModel {
         return false
     }
 
-    private func masked(_ message: String, apiKey: String) -> String {
-        guard apiKey.count > 4 else {
-            return message
+    private func masked(_ message: String, config: AppConfig) -> String {
+        [
+            config.apiKey,
+            config.openRouterAPIKey,
+            config.kimiAPIKey,
+            config.qwenAPIKey,
+            config.awsAccessKeyID,
+            config.awsSecretAccessKey,
+            config.awsSessionToken
+        ]
+        .filter { $0.count > 4 }
+        .reduce(message) { result, token in
+            result.replacingOccurrences(of: token, with: "***MASKED***")
         }
-        return message.replacingOccurrences(of: apiKey, with: "***MASKED***")
     }
 }

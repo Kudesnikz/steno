@@ -43,25 +43,57 @@ public struct SettingsView: View {
 
     private var generalTab: some View {
         Form {
-            Section("Gemini") {
-                SecureField("Google API Key", text: $viewModel.config.apiKey)
-                TextField("Base URL", text: $viewModel.config.baseURL)
-                Picker("AI Model", selection: $viewModel.config.modelName) {
-                    ForEach(AppConfig.aiModels, id: \.self) { model in
-                        Text(model).tag(model)
+            Section("AI") {
+                Picker("Провайдер", selection: $viewModel.config.aiProviderID) {
+                    ForEach(AIProviderID.allCases) { provider in
+                        Text(provider.displayName).tag(provider.rawValue)
                     }
                 }
-                Button {
-                    viewModel.checkAIConnection()
-                } label: {
-                    if viewModel.isCheckingAIConnection {
-                        ProgressView()
-                            .controlSize(.small)
+                .onChange(of: viewModel.config.aiProviderID) { _, newValue in
+                    viewModel.selectAIProvider(newValue)
+                }
+
+                Picker("Модель", selection: $viewModel.config.modelName) {
+                    if viewModel.modelsForSelectedProvider.isEmpty {
+                        Text("Нет подтвержденных video-моделей").tag(viewModel.config.modelName)
                     } else {
-                        Text("Проверить Base URL и модель")
+                        ForEach(viewModel.modelsForSelectedProvider) { model in
+                            Text(modelPickerTitle(model)).tag(model.modelID)
+                        }
                     }
                 }
-                .disabled(viewModel.isCheckingAIConnection)
+                LabeledContent("Статус каталога") {
+                    Text(viewModel.modelsForSelectedProvider.contains { $0.isDynamicallyVerified } ? "dynamic video-verified" : "documented allowlist")
+                        .foregroundStyle(.secondary)
+                }
+                providerCredentialsFields
+                HStack {
+                    Button {
+                        Task {
+                            await viewModel.refreshAIModels()
+                        }
+                    } label: {
+                        if viewModel.isRefreshingAIModels {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Text("Обновить video-модели")
+                        }
+                    }
+                    .disabled(viewModel.isRefreshingAIModels)
+
+                    Button {
+                        viewModel.checkAIConnection()
+                    } label: {
+                        if viewModel.isCheckingAIConnection {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Text("Проверить подключение")
+                        }
+                    }
+                    .disabled(viewModel.isCheckingAIConnection)
+                }
             }
 
             Section("Permissions") {
@@ -109,6 +141,34 @@ public struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    @ViewBuilder
+    private var providerCredentialsFields: some View {
+        switch viewModel.config.aiProvider {
+        case .gemini:
+            SecureField("Google Gemini API Key", text: $viewModel.config.apiKey)
+            TextField("Gemini Base URL", text: $viewModel.config.baseURL)
+        case .kimi:
+            SecureField("Moonshot API Key", text: $viewModel.config.kimiAPIKey)
+            TextField("Kimi Base URL", text: $viewModel.config.kimiBaseURL)
+        case .amazonBedrock:
+            TextField("AWS Access Key ID", text: $viewModel.config.awsAccessKeyID)
+            SecureField("AWS Secret Access Key", text: $viewModel.config.awsSecretAccessKey)
+            SecureField("AWS Session Token", text: $viewModel.config.awsSessionToken)
+            TextField("AWS Region", text: $viewModel.config.awsRegion)
+        case .qwen:
+            SecureField("DashScope API Key", text: $viewModel.config.qwenAPIKey)
+            TextField("Qwen Base URL", text: $viewModel.config.qwenBaseURL)
+        case .openRouter:
+            SecureField("OpenRouter API Key", text: $viewModel.config.openRouterAPIKey)
+            TextField("OpenRouter Base URL", text: $viewModel.config.openRouterBaseURL)
+        }
+    }
+
+    private func modelPickerTitle(_ model: AIModelReference) -> String {
+        let dynamicMarker = model.isDynamicallyVerified ? "video" : "allowlist"
+        return "\(model.displayName) · \(model.tier.displayName) · \(dynamicMarker)"
     }
 
     private var agentsTab: some View {
