@@ -258,7 +258,10 @@ public actor GeminiClient {
 
         let body = GenerateContentRequest(
             contents: [Content(role: "user", parts: parts)],
-            systemInstruction: Content(role: nil, parts: [ContentPart(fileData: nil, text: agent.prompt)])
+            systemInstruction: Content(
+                role: nil,
+                parts: [ContentPart(fileData: nil, text: PromptSecurity.systemPrompt(for: agent))]
+            )
         )
 
         var request = URLRequest(url: url)

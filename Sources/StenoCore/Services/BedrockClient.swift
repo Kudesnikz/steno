@@ -43,7 +43,7 @@ public actor BedrockClient {
                     ]
                 )
             ],
-            system: [BedrockTextBlock(text: agent.prompt)]
+            system: [BedrockTextBlock(text: PromptSecurity.systemPrompt(for: agent))]
         )
 
         let response = try await converse(body: body, config: config, modelID: model.modelID, context: "generate report")

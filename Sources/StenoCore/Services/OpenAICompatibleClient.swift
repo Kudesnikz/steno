@@ -33,10 +33,11 @@ public actor OpenAICompatibleClient {
         let start = Date()
         let videoDataURL = try videoURL.dataURL
         let prompt = AIPromptBuilder.meetingAnalysisPrompt(videoURL: videoURL, transcript: transcript)
+        let systemPrompt = PromptSecurity.systemPrompt(for: agent)
         let body = OpenAIChatRequest(
             model: model.modelID,
             messages: [
-                OpenAIMessage(role: "system", content: .text(agent.prompt)),
+                OpenAIMessage(role: "system", content: .text(systemPrompt)),
                 OpenAIMessage(
                     role: "user",
                     content: .parts([
