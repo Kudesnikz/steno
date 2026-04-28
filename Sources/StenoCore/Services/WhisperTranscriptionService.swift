@@ -1,42 +1,15 @@
 import Foundation
 import whisper
 
-public enum WhisperModelName: String, CaseIterable, Identifiable, Sendable {
-    case tinyQ5 = "ggml-tiny-q5_1"
-
-    public var id: String { rawValue }
-
-    public var displayName: String {
-        switch self {
-        case .tinyQ5:
-            "Tiny q5_1"
-        }
-    }
-
-    public var resourceName: String {
-        rawValue
-    }
-
-    public var expectedSHA256: String {
-        switch self {
-        case .tinyQ5:
-            "818710568da3ca15689e31a743197b520007872ff9576237bda97bd1b469c3d7"
-        }
-    }
-}
-
 public enum WhisperTranscriptionError: LocalizedError, Sendable {
-    case unsupportedModel(String)
     case modelNotFound(String)
     case contextInitializationFailed(String)
     case inferenceFailed
 
     public var errorDescription: String? {
         switch self {
-        case let .unsupportedModel(modelName):
-            "Unsupported local Whisper model: \(modelName)."
         case let .modelNotFound(modelName):
-            "Bundled Whisper model not found: \(modelName)."
+            "Whisper model not found: \(modelName)."
         case let .contextInitializationFailed(path):
             "Failed to initialize Whisper context from \(path)."
         case .inferenceFailed:
@@ -49,13 +22,14 @@ public struct WhisperModelLocator: Sendable {
     public init() {}
 
     public func modelURL(named modelName: String) throws -> URL {
-        guard let model = WhisperModelName(rawValue: modelName) else {
-            throw WhisperTranscriptionError.unsupportedModel(modelName)
+        if let url = Bundle.module.url(forResource: modelName, withExtension: "bin", subdirectory: "Models") {
+            return url
         }
-        guard let url = Bundle.module.url(forResource: model.resourceName, withExtension: "bin", subdirectory: "Models") else {
-            throw WhisperTranscriptionError.modelNotFound(model.rawValue)
+        let downloadedURL = UserPaths.whisperModelsDirectory.appending(path: "\(modelName).bin")
+        if FileManager.default.fileExists(atPath: downloadedURL.path) {
+            return downloadedURL
         }
-        return url
+        throw WhisperTranscriptionError.modelNotFound(modelName)
     }
 }
 

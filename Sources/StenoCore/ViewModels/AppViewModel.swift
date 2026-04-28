@@ -20,6 +20,12 @@ public final class AppViewModel {
     public var isTranscribing = false
     public var liveTranscriptDocument: TranscriptDocument?
     public var transcriptionErrorMessage: String?
+    public var availableWhisperModels: [WhisperModelDescriptor] = WhisperModelCatalogService.fallbackModels
+    public var isRefreshingWhisperModels = false
+    public var whisperDownloadState = WhisperModelDownloadState()
+    public var isTestingWhisperModel = false
+    public var whisperTestResult: String?
+    public var whisperTestErrorMessage: String?
     public var showOnboarding = false
     public var showSettings = false
     public var permissionState = PermissionState(hasScreenCapture: false, hasMicrophone: false)
@@ -29,6 +35,10 @@ public final class AppViewModel {
     @ObservationIgnored private let permissionsService: PermissionsService
     @ObservationIgnored private let aiClient: AIProcessingClient
     @ObservationIgnored private let modelCatalogService: AIModelCatalogService
+    @ObservationIgnored private let whisperModelCatalogService: WhisperModelCatalogService
+    @ObservationIgnored private let whisperModelStore: WhisperModelStore
+    @ObservationIgnored private let whisperModelDownloadService: WhisperModelDownloadService
+    @ObservationIgnored private let whisperVoiceTestService: WhisperVoiceTestService
     @ObservationIgnored private var recorder: ScreenRecordingService?
     @ObservationIgnored private var transcriptionCoordinator: RealtimeTranscriptionCoordinator?
     @ObservationIgnored private var recordingTimerTask: Task<Void, Never>?
@@ -40,12 +50,20 @@ public final class AppViewModel {
         configStore: ConfigStore = ConfigStore(),
         permissionsService: PermissionsService = PermissionsService(),
         aiClient: AIProcessingClient = AIProcessingClient(),
-        modelCatalogService: AIModelCatalogService = AIModelCatalogService()
+        modelCatalogService: AIModelCatalogService = AIModelCatalogService(),
+        whisperModelCatalogService: WhisperModelCatalogService = WhisperModelCatalogService(),
+        whisperModelStore: WhisperModelStore = WhisperModelStore(),
+        whisperModelDownloadService: WhisperModelDownloadService = WhisperModelDownloadService(),
+        whisperVoiceTestService: WhisperVoiceTestService = WhisperVoiceTestService()
     ) {
         self.configStore = configStore
         self.permissionsService = permissionsService
         self.aiClient = aiClient
         self.modelCatalogService = modelCatalogService
+        self.whisperModelCatalogService = whisperModelCatalogService
+        self.whisperModelStore = whisperModelStore
+        self.whisperModelDownloadService = whisperModelDownloadService
+        self.whisperVoiceTestService = whisperVoiceTestService
 
         var loadedConfig = AppConfig.default
         var shouldShowOnboarding = true
@@ -74,6 +92,9 @@ public final class AppViewModel {
         refreshSessions()
         Task {
             await refreshAIModels()
+        }
+        Task {
+            await refreshWhisperModels()
         }
         AppLog.info("AppViewModel initialized; onboarding=\(showOnboarding)", category: .app)
     }
@@ -183,6 +204,93 @@ public final class AppViewModel {
             return AIModelCatalog.providerModels(config.aiProvider)
         }
         return models
+    }
+
+    public var installedWhisperModels: [WhisperModelDescriptor] {
+        availableWhisperModels.filter(\.isInstalled)
+    }
+
+    public var activeWhisperModel: WhisperModelDescriptor? {
+        availableWhisperModels.first { $0.id == config.localTranscriptionModel }
+    }
+
+    public func refreshWhisperModels() async {
+        guard !isRefreshingWhisperModels else {
+            return
+        }
+        isRefreshingWhisperModels = true
+        let remoteModels = await whisperModelCatalogService.refreshCatalog()
+        availableWhisperModels = await whisperModelStore.mergedCatalog(remoteModels: remoteModels)
+        let installedIDs = Set(await whisperModelStore.installedModelIDs())
+        if !installedIDs.contains(config.localTranscriptionModel) {
+            config.localTranscriptionModel = "ggml-tiny-q5_1"
+        }
+        isRefreshingWhisperModels = false
+    }
+
+    public func downloadWhisperModels(ids: Set<String>) async {
+        guard !ids.isEmpty, !whisperDownloadState.isDownloading else {
+            return
+        }
+        for id in ids.sorted() {
+            guard let model = availableWhisperModels.first(where: { $0.id == id }), !model.isInstalled else {
+                continue
+            }
+            whisperDownloadState = WhisperModelDownloadState(modelID: id, isDownloading: true)
+            statusMessage = "Downloading Whisper model: \(model.displayName)"
+            do {
+                try await whisperModelDownloadService.download(model)
+                AppLog.info("Downloaded Whisper model \(id)", category: .config)
+            } catch {
+                whisperTestErrorMessage = error.localizedDescription
+                AppLog.error("Whisper model download failed \(id): \(error.localizedDescription)", category: .config)
+                break
+            }
+            await refreshWhisperModels()
+        }
+        whisperDownloadState = WhisperModelDownloadState()
+        statusMessage = "Whisper models updated"
+    }
+
+    public func deleteWhisperModels(ids: Set<String>) async {
+        for id in ids.sorted() {
+            do {
+                try await whisperModelStore.delete(modelID: id)
+                AppLog.info("Deleted Whisper model \(id)", category: .config)
+            } catch {
+                whisperTestErrorMessage = error.localizedDescription
+                AppLog.error("Whisper model delete failed \(id): \(error.localizedDescription)", category: .config)
+            }
+        }
+        let installedIDs = Set(await whisperModelStore.installedModelIDs())
+        if !installedIDs.contains(config.localTranscriptionModel) {
+            config.localTranscriptionModel = "ggml-tiny-q5_1"
+        }
+        await refreshWhisperModels()
+    }
+
+    public func runWhisperVoiceTest(modelID: String?) async {
+        guard !isTestingWhisperModel else {
+            return
+        }
+        let selectedModelID = modelID ?? config.localTranscriptionModel
+        var testConfig = config
+        testConfig.localTranscriptionModel = selectedModelID
+        isTestingWhisperModel = true
+        whisperTestResult = nil
+        whisperTestErrorMessage = nil
+        statusMessage = "Recording 5 seconds for Whisper test"
+        do {
+            let result = try await whisperVoiceTestService.runTest(config: testConfig, durationSeconds: 5)
+            let text = result.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+            whisperTestResult = text.isEmpty ? "Whisper returned an empty transcript." : text
+            statusMessage = "Whisper test completed"
+        } catch {
+            whisperTestErrorMessage = error.localizedDescription
+            statusMessage = "Whisper test failed"
+            AppLog.error("Whisper voice test failed: \(error.localizedDescription)", category: .config)
+        }
+        isTestingWhisperModel = false
     }
 
     public func refreshSessions() {
@@ -554,8 +662,8 @@ public final class AppViewModel {
         if !config.agents.contains(where: { $0.id == config.activeAgentID }) {
             config.activeAgentID = config.agents.first?.id ?? "default"
         }
-        if WhisperModelName(rawValue: config.localTranscriptionModel) == nil {
-            config.localTranscriptionModel = WhisperModelName.tinyQ5.rawValue
+        if config.localTranscriptionModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            config.localTranscriptionModel = "ggml-tiny-q5_1"
         }
         if config.localTranscriptionThreadCount < 1 {
             config.localTranscriptionThreadCount = 1

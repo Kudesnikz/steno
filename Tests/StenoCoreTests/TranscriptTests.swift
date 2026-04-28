@@ -35,7 +35,7 @@ final class TranscriptTests: XCTestCase {
     }
 
     func testBundledTinyWhisperModelIsAvailable() throws {
-        let url = try WhisperModelLocator().modelURL(named: WhisperModelName.tinyQ5.rawValue)
+        let url = try WhisperModelLocator().modelURL(named: "ggml-tiny-q5_1")
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
         XCTAssertEqual(url.lastPathComponent, "ggml-tiny-q5_1.bin")
