@@ -117,7 +117,7 @@ public final class StatusBarController: NSObject {
     }
 
     private func item(title: String, action: Selector) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        let item = IconlessMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self
         return item
     }
@@ -176,6 +176,13 @@ public final class StatusBarController: NSObject {
 
     @objc private func quit() {
         NSApp.terminate(nil)
+    }
+}
+
+private final class IconlessMenuItem: NSMenuItem {
+    override var image: NSImage? {
+        get { nil }
+        set {}
     }
 }
 
