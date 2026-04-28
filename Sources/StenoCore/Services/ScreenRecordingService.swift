@@ -58,13 +58,17 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
     public func start(
         outputURL: URL,
         preset: VideoQualityPreset,
+        selectedDisplayID: String? = nil,
         audioHandler: AudioHandler? = nil,
         eventHandler: @escaping EventHandler
     ) async throws {
         setLifecycle(.starting)
         self.eventHandler = eventHandler
         self.audioHandler = audioHandler
-        AppLog.info("Starting recording width=\(preset.width) height=\(preset.height) fps=\(preset.fps)", category: .recording)
+        AppLog.info(
+            "Starting recording width=\(preset.width) height=\(preset.height) fps=\(preset.fps) displayID=\(selectedDisplayID ?? "default")",
+            category: .recording
+        )
 
         let content: SCShareableContent
         do {
@@ -73,7 +77,7 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
             resetAfterStop()
             throw error
         }
-        guard let display = content.displays.first else {
+        guard let display = selectedDisplay(from: content.displays, configuredID: selectedDisplayID) else {
             AppLog.error("Recording start failed: no display", category: .recording)
             resetAfterStop()
             throw RecordingError.noDisplay
@@ -127,6 +131,16 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
         }
         setLifecycle(.recording)
         AppLog.info("ScreenCaptureKit stream started", category: .recording)
+    }
+
+    private func selectedDisplay(from displays: [SCDisplay], configuredID: String?) -> SCDisplay? {
+        guard !displays.isEmpty else {
+            return nil
+        }
+        guard let configuredID, configuredID != CaptureDisplaySelection.legacyDefaultDisplayID else {
+            return displays.first
+        }
+        return displays.first { String($0.displayID) == configuredID } ?? displays.first
     }
 
     public func stop() async throws {

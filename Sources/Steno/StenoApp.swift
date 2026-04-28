@@ -21,6 +21,7 @@ struct StenoApp: App {
                     NSApp.activate(ignoringOtherApps: true)
                 }
         }
+        .windowToolbarStyle(.unifiedCompact)
         .commands {
             CommandGroup(replacing: .appSettings) {
                 Button("Settings...") {

@@ -1,8 +1,11 @@
+import AppKit
 import AVKit
+import Combine
 import SwiftUI
 
 public struct ContentView: View {
     @Bindable private var viewModel: AppViewModel
+    @Environment(\.scenePhase) private var scenePhase
     @State private var renameText = ""
     @State private var isRenaming = false
     @State private var showDeleteConfirmation = false
@@ -26,48 +29,66 @@ public struct ContentView: View {
         }
         .frame(minWidth: 920, minHeight: 620)
         .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                if viewModel.isProcessing || viewModel.isFinalizingRecording {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-                if viewModel.isProcessing {
-                    Button("Cancel") {
-                        viewModel.cancelGeneration()
+            ToolbarItem(placement: .primaryAction) {
+                HStack(spacing: 8) {
+                    if viewModel.isProcessing || viewModel.isFinalizingRecording {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    if viewModel.isProcessing {
+                        Button("Cancel") {
+                            viewModel.cancelGeneration()
+                        }
+                    }
+
+                    if viewModel.shouldShowCaptureDisplayPicker {
+                        Picker("Monitor", selection: Binding(
+                            get: { viewModel.config.videoDeviceIndex },
+                            set: { viewModel.selectCaptureDisplay(id: $0) }
+                        )) {
+                            ForEach(viewModel.availableCaptureDisplays) { display in
+                                Text(display.menuTitle).tag(display.id)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(width: 190)
+                        .help("Screen to record")
+                    }
+
+                    Picker("Agent", selection: $viewModel.config.activeAgentID) {
+                        ForEach(viewModel.config.agents) { agent in
+                            Text(agent.name).tag(agent.id)
+                        }
+                    }
+                    .frame(width: 190)
+                    .help("Agent for AI report generation")
+
+                    Button {
+                        if viewModel.isRecording {
+                            Task { await viewModel.stopRecording() }
+                        } else {
+                            Task { await viewModel.startRecording() }
+                        }
+                    } label: {
+                        ToolbarButtonLabel(title: recordingButtonTitle, systemImage: recordingButtonIcon)
+                    }
+                    .tint(viewModel.isRecording ? .secondary : .red)
+                    .disabled(viewModel.isFinalizingRecording || (viewModel.isProcessing && !viewModel.isRecording))
+
+                    Button {
+                        viewModel.generateSelectedReport()
+                    } label: {
+                        ToolbarButtonLabel(title: "Generate", systemImage: "bolt.fill")
+                    }
+                    .disabled(!viewModel.canGenerate)
+
+                    Button {
+                        viewModel.showSettings = true
+                    } label: {
+                        Label("Settings", systemImage: "gearshape")
                     }
                 }
-
-                Picker("Agent", selection: $viewModel.config.activeAgentID) {
-                    ForEach(viewModel.config.agents) { agent in
-                        Text(agent.name).tag(agent.id)
-                    }
-                }
-                .frame(width: 190)
-
-                Button {
-                    if viewModel.isRecording {
-                        Task { await viewModel.stopRecording() }
-                    } else {
-                        Task { await viewModel.startRecording() }
-                    }
-                } label: {
-                    Label(recordingButtonTitle, systemImage: recordingButtonIcon)
-                }
-                .tint(viewModel.isRecording ? .secondary : .red)
-                .disabled(viewModel.isFinalizingRecording || (viewModel.isProcessing && !viewModel.isRecording))
-
-                Button {
-                    viewModel.generateSelectedReport()
-                } label: {
-                    Label("Generate", systemImage: "bolt.fill")
-                }
-                .disabled(!viewModel.canGenerate)
-
-                Button {
-                    viewModel.showSettings = true
-                } label: {
-                    Label("Settings", systemImage: "gearshape")
-                }
+                .controlSize(.small)
             }
         }
         .sheet(isPresented: $viewModel.showSettings) {
@@ -97,6 +118,22 @@ public struct ContentView: View {
         .onAppear {
             AppLog.info("Main window appeared", category: .ui)
             viewModel.refreshPermissions()
+            Task {
+                await viewModel.refreshCaptureDisplays()
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else {
+                return
+            }
+            Task {
+                await viewModel.refreshCaptureDisplays()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+            Task {
+                await viewModel.refreshCaptureDisplays()
+            }
         }
     }
 
@@ -112,6 +149,18 @@ public struct ContentView: View {
             return "hourglass"
         }
         return viewModel.isRecording ? "stop.circle.fill" : "record.circle"
+    }
+}
+
+private struct ToolbarButtonLabel: View {
+    var title: String
+    var systemImage: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: systemImage)
+            Text(title)
+        }
     }
 }
 
@@ -275,7 +324,7 @@ private struct DetailView: View {
             } else {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(session.displayName)
-                        .font(.title2.weight(.semibold))
+                        .font(.headline)
                     Text(session.videoURL.path)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -302,7 +351,8 @@ private struct DetailView: View {
                 Label("Delete", systemImage: "trash")
             }
         }
-        .padding()
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
         .background(.regularMaterial)
     }
 
@@ -420,14 +470,187 @@ private struct ReportPane: View {
             .padding(.bottom, 8)
 
             ScrollView {
-                Text(markdown: viewModel.loadReportText(agentID: agentID))
-                    .textSelection(.enabled)
+                MarkdownReportView(markdown: viewModel.loadReportText(agentID: agentID))
                     .frame(maxWidth: 860, alignment: .leading)
                     .padding(.horizontal, 36)
                     .padding(.vertical, 24)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+}
+
+private struct MarkdownReportView: View {
+    private let blocks: [MarkdownBlock]
+
+    init(markdown: String) {
+        blocks = MarkdownBlockParser.parse(markdown)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                blockView(block)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .textSelection(.enabled)
+    }
+
+    @ViewBuilder
+    private func blockView(_ block: MarkdownBlock) -> some View {
+        switch block {
+        case let .heading(level, text):
+            Text(markdown: text)
+                .font(headingFont(level))
+                .padding(.top, level == 1 ? 4 : 2)
+        case let .paragraph(text):
+            Text(markdown: text)
+                .lineSpacing(3)
+        case let .unorderedList(items):
+            MarkdownListView(items: items, style: .unordered)
+        case let .orderedList(items):
+            MarkdownListView(items: items, style: .ordered)
+        case let .codeBlock(language, code):
+            MarkdownCodeBlockView(language: language, code: code)
+        case let .blockquote(text):
+            MarkdownBlockquoteView(text: text)
+        case let .table(headers, rows):
+            MarkdownTableView(headers: headers, rows: rows)
+        case .divider:
+            Divider()
+                .padding(.vertical, 2)
+        }
+    }
+
+    private func headingFont(_ level: Int) -> Font {
+        switch level {
+        case 1:
+            .title2.weight(.semibold)
+        case 2:
+            .title3.weight(.semibold)
+        case 3:
+            .headline
+        default:
+            .subheadline.weight(.semibold)
+        }
+    }
+}
+
+private struct MarkdownListView: View {
+    enum ListStyle {
+        case unordered
+        case ordered
+    }
+
+    var items: [String]
+    var style: ListStyle
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(marker(for: index))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 24, alignment: .trailing)
+                    Text(markdown: item)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    private func marker(for index: Int) -> String {
+        switch style {
+        case .unordered:
+            "•"
+        case .ordered:
+            "\(index + 1)."
+        }
+    }
+}
+
+private struct MarkdownCodeBlockView: View {
+    var language: String?
+    var code: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let language, !language.isEmpty {
+                Text(language.uppercased())
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            Text(code)
+                .font(.system(.body, design: .monospaced))
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(.quaternary)
+        }
+    }
+}
+
+private struct MarkdownBlockquoteView: View {
+    var text: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Rectangle()
+                .fill(.secondary)
+                .frame(width: 3)
+            Text(markdown: text)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+private struct MarkdownTableView: View {
+    var headers: [String]
+    var rows: [[String]]
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
+                GridRow {
+                    ForEach(columnIndices, id: \.self) { index in
+                        tableCell(headers[safe: index] ?? "", isHeader: true)
+                    }
+                }
+
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    GridRow {
+                        ForEach(columnIndices, id: \.self) { index in
+                            tableCell(row[safe: index] ?? "", isHeader: false)
+                        }
+                    }
+                }
+            }
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(.quaternary)
+            }
+        }
+    }
+
+    private var columnIndices: Range<Int> {
+        0..<max(headers.count, rows.map(\.count).max() ?? 0)
+    }
+
+    private func tableCell(_ text: String, isHeader: Bool) -> some View {
+        Text(markdown: text)
+            .font(isHeader ? .subheadline.weight(.semibold) : .body)
+            .frame(minWidth: 120, maxWidth: 260, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(isHeader ? Color.secondary.opacity(0.12) : Color.clear)
+            .border(.quaternary, width: 0.5)
     }
 }
 
@@ -567,5 +790,11 @@ private extension Text {
         } else {
             self.init(verbatim: markdown)
         }
+    }
+}
+
+private extension Collection {
+    subscript(safe index: Index) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }

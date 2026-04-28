@@ -17,6 +17,7 @@ public final class AppViewModel {
     public var statusMessage: String?
     public var errorMessage: String?
     public var availableAIModels: [AIModelReference] = AIModelCatalog.fallbackModels
+    public var availableCaptureDisplays: [CaptureDisplay] = []
     public var isRefreshingAIModels = false
     public var isTranscribing = false
     public var liveTranscriptDocument: TranscriptDocument?
@@ -34,6 +35,7 @@ public final class AppViewModel {
     @ObservationIgnored private let configStore: ConfigStore
     @ObservationIgnored private var sessionStore = SessionStore(saveDirectory: URL(fileURLWithPath: AppConfig.default.saveDirectory))
     @ObservationIgnored private let permissionsService: PermissionsService
+    @ObservationIgnored private let captureDisplayService: CaptureDisplayService
     @ObservationIgnored private let aiClient: AIProcessingClient
     @ObservationIgnored private let modelCatalogService: AIModelCatalogService
     @ObservationIgnored private let whisperModelCatalogService: WhisperModelCatalogService
@@ -50,6 +52,7 @@ public final class AppViewModel {
     public init(
         configStore: ConfigStore = ConfigStore(),
         permissionsService: PermissionsService = PermissionsService(),
+        captureDisplayService: CaptureDisplayService = CaptureDisplayService(),
         aiClient: AIProcessingClient = AIProcessingClient(),
         modelCatalogService: AIModelCatalogService = AIModelCatalogService(),
         whisperModelCatalogService: WhisperModelCatalogService = WhisperModelCatalogService(),
@@ -59,6 +62,7 @@ public final class AppViewModel {
     ) {
         self.configStore = configStore
         self.permissionsService = permissionsService
+        self.captureDisplayService = captureDisplayService
         self.aiClient = aiClient
         self.modelCatalogService = modelCatalogService
         self.whisperModelCatalogService = whisperModelCatalogService
@@ -96,6 +100,9 @@ public final class AppViewModel {
         permissionState = permissionsService.currentState()
         refreshSessions()
         Task {
+            await refreshCaptureDisplays()
+        }
+        Task {
             await refreshAIModels()
         }
         Task {
@@ -117,6 +124,10 @@ public final class AppViewModel {
         config.activeAgent ?? config.agents.first
     }
 
+    public var shouldShowCaptureDisplayPicker: Bool {
+        availableCaptureDisplays.count > 1
+    }
+
     public var canGenerate: Bool {
         selectedSession != nil && !isProcessing && !isRecording && !isFinalizingRecording
     }
@@ -131,6 +142,28 @@ public final class AppViewModel {
     public func refreshPermissions() {
         permissionState = permissionsService.currentState()
         AppLog.info("Refreshed permissions screen=\(permissionState.hasScreenCapture) microphone=\(permissionState.hasMicrophone)", category: .permissions)
+    }
+
+    public func refreshCaptureDisplays() async {
+        let displays = await captureDisplayService.availableDisplays()
+        guard displays != availableCaptureDisplays else {
+            return
+        }
+        availableCaptureDisplays = displays
+        normalizeCaptureDisplaySelection(shouldPersist: true)
+        AppLog.info("Refreshed capture displays count=\(displays.count)", category: .recording)
+    }
+
+    public func selectCaptureDisplay(id: String) {
+        guard let display = availableCaptureDisplays.first(where: { $0.id == id }) else {
+            return
+        }
+        guard config.videoDeviceIndex != display.id || config.videoDeviceName != display.name else {
+            return
+        }
+        config.videoDeviceIndex = display.id
+        config.videoDeviceName = display.name
+        persistCaptureDisplaySelection(display, updateStatus: true)
     }
 
     public func requestInitialPermissions() {
@@ -369,6 +402,7 @@ public final class AppViewModel {
             AppLog.warning("Recording blocked because API key is missing", category: .recording)
             return
         }
+        await refreshCaptureDisplays()
 
         let formatter = DateFormatter()
         formatter.dateFormat = "dd.MM.yyyy_HH:mm:ss"
@@ -406,11 +440,19 @@ public final class AppViewModel {
                     language: config.localTranscriptionLanguage
                 )
             }
-            AppLog.info("Recording requested baseName=\(baseName)", category: .recording)
+            AppLog.info(
+                "Recording requested baseName=\(baseName) displayID=\(config.videoDeviceIndex) displayName=\(config.videoDeviceName)",
+                category: .recording
+            )
 
             let audioHandler = makeAudioHandler(coordinator: transcriptionCoordinator)
 
-            try await recorder.start(outputURL: outputURL, preset: config.preset(), audioHandler: audioHandler) { [weak self] event in
+            try await recorder.start(
+                outputURL: outputURL,
+                preset: config.preset(),
+                selectedDisplayID: config.videoDeviceIndex,
+                audioHandler: audioHandler
+            ) { [weak self] event in
                 Task { @MainActor in
                     self?.handleRecorderEvent(event)
                 }
@@ -764,7 +806,38 @@ public final class AppViewModel {
         if config.localTranscriptionLanguage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             config.localTranscriptionLanguage = WhisperDefaults.defaultLanguageCode
         }
+        normalizeCaptureDisplaySelection(shouldPersist: false)
         config.localTranscriptionDefaultsRevision = WhisperDefaults.currentDefaultsRevision
+    }
+
+    private func normalizeCaptureDisplaySelection(shouldPersist: Bool) {
+        guard let display = CaptureDisplaySelection.selectedDisplay(
+            configuredID: config.videoDeviceIndex,
+            displays: availableCaptureDisplays
+        ) else {
+            return
+        }
+        guard config.videoDeviceIndex != display.id || config.videoDeviceName != display.name else {
+            return
+        }
+        config.videoDeviceIndex = display.id
+        config.videoDeviceName = display.name
+        if shouldPersist {
+            persistCaptureDisplaySelection(display, updateStatus: false)
+        }
+    }
+
+    private func persistCaptureDisplaySelection(_ display: CaptureDisplay, updateStatus: Bool) {
+        do {
+            try configStore.save(config)
+            if updateStatus {
+                statusMessage = "Monitor selected: \(display.name)"
+            }
+            AppLog.info("Selected capture display \(display.name) id=\(display.id)", category: .recording)
+        } catch {
+            errorMessage = "Monitor selection save failed: \(error.localizedDescription)"
+            AppLog.error("Monitor selection save failed: \(error.localizedDescription)", category: .config)
+        }
     }
 
     private func startRecordingTimer() {
