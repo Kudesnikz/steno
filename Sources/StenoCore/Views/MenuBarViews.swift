@@ -111,6 +111,7 @@ public final class StatusBarController: NSObject {
         menu.addItem(item(title: "Settings...", action: #selector(openSettings)))
         menu.addItem(item(title: "Open Output Folder", action: #selector(openOutputFolder)))
         menu.addItem(.separator())
+        menu.addItem(item(title: "Made by Sergey Galay", action: #selector(openRepository)))
         menu.addItem(item(title: "Quit", action: #selector(quit)))
 
         menu.item(withTitle: recordingTitle)?.isEnabled = !snapshot.isProcessing && !snapshot.isFinalizingRecording
@@ -172,6 +173,10 @@ public final class StatusBarController: NSObject {
 
     @objc private func openOutputFolder() {
         viewModel?.openOutputFolder()
+    }
+
+    @objc private func openRepository() {
+        NSWorkspace.shared.open(AppLinks.repository)
     }
 
     @objc private func quit() {

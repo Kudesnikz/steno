@@ -27,9 +27,10 @@ public struct SettingsView: View {
             Divider()
 
             HStack {
-                Text("Version 0.2.0-native")
-                    .foregroundStyle(.secondary)
+                Link("Version 0.2.0-native", destination: AppLinks.repository)
                     .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .help("Open Steno on GitHub")
                 Spacer()
                 Button("Cancel") {
                     dismiss()
