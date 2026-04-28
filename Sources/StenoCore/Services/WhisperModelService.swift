@@ -220,11 +220,11 @@ private struct ParsedWhisperModelID {
     var language: String
 
     init(id: String) {
-        var parts = id.replacingOccurrences(of: "ggml-", with: "").split(separator: "-").map(String.init)
-        language = parts.last == "en" ? "English" : "Multilingual"
-        if language == "English" {
-            parts.removeLast()
-        }
+        var normalizedID = id.replacingOccurrences(of: "ggml-", with: "")
+        let isEnglishOnly = normalizedID.contains(".en")
+        normalizedID = normalizedID.replacingOccurrences(of: ".en", with: "")
+        var parts = normalizedID.split(separator: "-").map(String.init)
+        language = isEnglishOnly ? "English only" : "Multilingual"
 
         if let last = parts.last, last.hasPrefix("q") {
             quantization = last.uppercased()

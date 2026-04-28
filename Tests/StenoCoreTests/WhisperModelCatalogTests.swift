@@ -24,4 +24,17 @@ final class WhisperModelCatalogTests: XCTestCase {
         XCTAssertEqual(model.language, "Multilingual")
         XCTAssertEqual(model.sha256, "abc")
     }
+
+    func testDescriptorMarksDotEnModelsAsEnglishOnly() {
+        let model = WhisperModelCatalogService.descriptor(
+            fileName: "ggml-base.en-q8_0.bin",
+            sizeBytes: 81_781_811
+        )
+
+        XCTAssertEqual(model.id, "ggml-base.en-q8_0")
+        XCTAssertEqual(model.family, "base")
+        XCTAssertEqual(model.quantization, "Q8_0")
+        XCTAssertEqual(model.language, "English only")
+        XCTAssertTrue(model.displayName.contains("English only"))
+    }
 }
