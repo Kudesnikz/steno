@@ -48,6 +48,7 @@ public final class StatusBarController: NSObject {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
         statusItem.menu = menu
+        menu.showsStateColumn = false
         configureButton()
         rebuildMenu()
         update(snapshot)
