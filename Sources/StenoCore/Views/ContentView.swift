@@ -27,9 +27,11 @@ public struct ContentView: View {
         .frame(minWidth: 920, minHeight: 620)
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
-                if viewModel.isProcessing {
+                if viewModel.isProcessing || viewModel.isFinalizingRecording {
                     ProgressView()
                         .controlSize(.small)
+                }
+                if viewModel.isProcessing {
                     Button("Cancel") {
                         viewModel.cancelGeneration()
                     }
@@ -49,9 +51,10 @@ public struct ContentView: View {
                         Task { await viewModel.startRecording() }
                     }
                 } label: {
-                    Label(viewModel.isRecording ? "Stop" : "Record", systemImage: viewModel.isRecording ? "stop.circle.fill" : "record.circle")
+                    Label(recordingButtonTitle, systemImage: recordingButtonIcon)
                 }
                 .tint(viewModel.isRecording ? .secondary : .red)
+                .disabled(viewModel.isFinalizingRecording || (viewModel.isProcessing && !viewModel.isRecording))
 
                 Button {
                     viewModel.generateSelectedReport()
@@ -95,6 +98,20 @@ public struct ContentView: View {
             AppLog.info("Main window appeared", category: .ui)
             viewModel.refreshPermissions()
         }
+    }
+
+    private var recordingButtonTitle: String {
+        if viewModel.isFinalizingRecording {
+            return "Saving"
+        }
+        return viewModel.isRecording ? "Stop" : "Record"
+    }
+
+    private var recordingButtonIcon: String {
+        if viewModel.isFinalizingRecording {
+            return "hourglass"
+        }
+        return viewModel.isRecording ? "stop.circle.fill" : "record.circle"
     }
 }
 
@@ -158,6 +175,9 @@ private struct SidebarStatusRow: View {
             if viewModel.isRecording {
                 Label(StenoFormatters.duration(viewModel.recordingDuration), systemImage: "record.circle")
                     .foregroundStyle(.red)
+            } else if viewModel.isFinalizingRecording {
+                Label("Finalizing recording", systemImage: "hourglass")
+                    .foregroundStyle(.secondary)
             }
 
             Label {

@@ -41,7 +41,7 @@ struct StenoApp: App {
             }
 
             CommandMenu("Recording") {
-                Button(viewModel.isRecording ? "Stop Recording" : "Start Recording") {
+                Button(viewModel.recordingCommandTitle) {
                     AppLog.info("Command recording action selected", category: .ui)
                     if viewModel.isRecording {
                         Task { await viewModel.stopRecording() }
@@ -50,6 +50,7 @@ struct StenoApp: App {
                     }
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(viewModel.isFinalizingRecording || viewModel.isProcessing)
 
                 Button("Generate Report") {
                     AppLog.info("Command generate report selected", category: .ui)
@@ -105,6 +106,7 @@ private struct StatusBarBridgeView: View {
     private var snapshot: StatusBarSnapshot {
         StatusBarSnapshot(
             isRecording: viewModel.isRecording,
+            isFinalizingRecording: viewModel.isFinalizingRecording,
             isProcessing: viewModel.isProcessing,
             showRecordingTime: viewModel.config.showRecordingTime,
             recordingDuration: viewModel.recordingDuration

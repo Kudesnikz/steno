@@ -4,12 +4,20 @@ import Foundation
 /// Snapshot of app state that controls the menu bar status item presentation.
 public struct StatusBarSnapshot: Equatable, Sendable {
     public var isRecording: Bool
+    public var isFinalizingRecording: Bool
     public var isProcessing: Bool
     public var showRecordingTime: Bool
     public var recordingDuration: Int
 
-    public init(isRecording: Bool, isProcessing: Bool, showRecordingTime: Bool, recordingDuration: Int) {
+    public init(
+        isRecording: Bool,
+        isFinalizingRecording: Bool,
+        isProcessing: Bool,
+        showRecordingTime: Bool,
+        recordingDuration: Int
+    ) {
         self.isRecording = isRecording
+        self.isFinalizingRecording = isFinalizingRecording
         self.isProcessing = isProcessing
         self.showRecordingTime = showRecordingTime
         self.recordingDuration = recordingDuration
@@ -30,6 +38,7 @@ public final class StatusBarController: NSObject {
     private var showSettings: (() -> Void)?
     private var snapshot = StatusBarSnapshot(
         isRecording: false,
+        isFinalizingRecording: false,
         isProcessing: false,
         showRecordingTime: true,
         recordingDuration: 0
@@ -84,7 +93,12 @@ public final class StatusBarController: NSObject {
     private func rebuildMenu() {
         menu.removeAllItems()
 
-        let recordingTitle = snapshot.isRecording ? "Stop Recording" : "Start Recording"
+        let recordingTitle: String
+        if snapshot.isFinalizingRecording {
+            recordingTitle = "Finalizing Recording..."
+        } else {
+            recordingTitle = snapshot.isRecording ? "Stop Recording" : "Start Recording"
+        }
         menu.addItem(item(title: recordingTitle, action: #selector(toggleRecording)))
 
         if snapshot.isProcessing {
@@ -98,7 +112,7 @@ public final class StatusBarController: NSObject {
         menu.addItem(.separator())
         menu.addItem(item(title: "Quit", action: #selector(quit)))
 
-        menu.item(withTitle: recordingTitle)?.isEnabled = !snapshot.isProcessing
+        menu.item(withTitle: recordingTitle)?.isEnabled = !snapshot.isProcessing && !snapshot.isFinalizingRecording
     }
 
     private func item(title: String, action: Selector) -> NSMenuItem {
@@ -111,7 +125,7 @@ public final class StatusBarController: NSObject {
         if snapshot.isRecording {
             return loadTemplateImage(named: "menu_recordingTemplate", fallbackSymbol: "record.circle.fill")
         }
-        if snapshot.isProcessing {
+        if snapshot.isProcessing || snapshot.isFinalizingRecording {
             return loadTemplateImage(named: "menu_processingTemplate", fallbackSymbol: "bolt.fill")
         }
         return loadTemplateImage(named: "menu_idleTemplate", fallbackSymbol: "video.fill")
@@ -130,6 +144,9 @@ public final class StatusBarController: NSObject {
     }
 
     @objc private func toggleRecording() {
+        guard !snapshot.isFinalizingRecording else {
+            return
+        }
         guard let viewModel else {
             return
         }
@@ -172,6 +189,9 @@ private extension StatusBarSnapshot {
     var tooltip: String {
         if isRecording {
             return "Steno is recording"
+        }
+        if isFinalizingRecording {
+            return "Steno is finalizing recording"
         }
         if isProcessing {
             return "Steno is processing"

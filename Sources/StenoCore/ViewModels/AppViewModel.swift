@@ -10,6 +10,7 @@ public final class AppViewModel {
     public var selectedSessionID: MeetingSession.ID?
     public var selectedTabID: String = "player"
     public var isRecording = false
+    public var isFinalizingRecording = false
     public var isProcessing = false
     public var isCheckingAIConnection = false
     public var recordingDuration = 0
@@ -113,7 +114,14 @@ public final class AppViewModel {
     }
 
     public var canGenerate: Bool {
-        selectedSession != nil && !isProcessing && !isRecording
+        selectedSession != nil && !isProcessing && !isRecording && !isFinalizingRecording
+    }
+
+    public var recordingCommandTitle: String {
+        if isFinalizingRecording {
+            return "Finalizing Recording..."
+        }
+        return isRecording ? "Stop Recording" : "Start Recording"
     }
 
     public func refreshPermissions() {
@@ -334,7 +342,7 @@ public final class AppViewModel {
     }
 
     public func startRecording() async {
-        guard !isRecording, !isProcessing else {
+        guard !isRecording, !isFinalizingRecording, !isProcessing else {
             return
         }
         refreshPermissions()
@@ -435,11 +443,14 @@ public final class AppViewModel {
     }
 
     public func stopRecording() async {
-        guard isRecording else {
+        guard isRecording, !isFinalizingRecording else {
             return
         }
         recordingTimerTask?.cancel()
         recordingTimerTask = nil
+        isRecording = false
+        isFinalizingRecording = true
+        statusMessage = "Finalizing recording"
 
         do {
             try await recorder?.stop()
@@ -491,7 +502,7 @@ public final class AppViewModel {
         recorder = nil
         transcriptionCoordinator = nil
         isTranscribing = false
-        isRecording = false
+        isFinalizingRecording = false
         currentRecordingBaseName = nil
         currentRecordingURL = nil
         refreshSessions()
@@ -701,6 +712,7 @@ public final class AppViewModel {
         case let .didFail(message):
             errorMessage = "Recording failed: \(message)"
             isRecording = false
+            isFinalizingRecording = false
             recordingTimerTask?.cancel()
             recordingTimerTask = nil
             if let baseName = currentRecordingBaseName {
