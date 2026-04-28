@@ -5,10 +5,19 @@ final class WhisperModelCatalogTests: XCTestCase {
     func testFallbackCatalogContainsMultipleFamiliesAndQuantizations() {
         let models = WhisperModelCatalogService.fallbackModels
 
+        XCTAssertTrue(models.contains { $0.id == WhisperDefaults.defaultModelID })
         XCTAssertTrue(models.contains { $0.id == "ggml-tiny-q5_1" })
         XCTAssertTrue(models.contains { $0.id == "ggml-small-q8_0" })
         XCTAssertTrue(models.contains { $0.id == "ggml-large-v3-turbo-q5_0" })
         XCTAssertTrue(Set(models.map(\.quantization)).isSuperset(of: ["Q5_0", "Q5_1", "Q8_0", "Full"]))
+    }
+
+    func testFallbackCatalogContainsOnlyMultilingualModels() {
+        let models = WhisperModelCatalogService.fallbackModels
+
+        XCTAssertFalse(models.contains { $0.language == "English only" })
+        XCTAssertFalse(WhisperModelCatalogService.isSupportedCatalogFileName("ggml-base.en-q8_0.bin"))
+        XCTAssertFalse(WhisperModelCatalogService.isSupportedCatalogModelID("ggml-small.en-q5_1"))
     }
 
     func testDescriptorParsesFamilyQuantizationAndLanguage() {

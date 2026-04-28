@@ -81,6 +81,7 @@ public struct AppConfig: Codable, Hashable, Sendable {
     public var localTranscriptionLanguage: String
     public var localTranscriptionThreadCount: Int
     public var localTranscriptionUseGPU: Bool
+    public var localTranscriptionDefaultsRevision: Int
     public var activeAgentID: String
     public var agents: [Agent]
 
@@ -120,6 +121,7 @@ public struct AppConfig: Codable, Hashable, Sendable {
         case localTranscriptionLanguage = "local_transcription_language"
         case localTranscriptionThreadCount = "local_transcription_thread_count"
         case localTranscriptionUseGPU = "local_transcription_use_gpu"
+        case localTranscriptionDefaultsRevision = "local_transcription_defaults_revision"
         case activeAgentID = "active_agent_id"
         case agents
     }
@@ -160,6 +162,7 @@ public struct AppConfig: Codable, Hashable, Sendable {
         localTranscriptionLanguage: String,
         localTranscriptionThreadCount: Int,
         localTranscriptionUseGPU: Bool,
+        localTranscriptionDefaultsRevision: Int,
         activeAgentID: String,
         agents: [Agent]
     ) {
@@ -198,6 +201,7 @@ public struct AppConfig: Codable, Hashable, Sendable {
         self.localTranscriptionLanguage = localTranscriptionLanguage
         self.localTranscriptionThreadCount = localTranscriptionThreadCount
         self.localTranscriptionUseGPU = localTranscriptionUseGPU
+        self.localTranscriptionDefaultsRevision = localTranscriptionDefaultsRevision
         self.activeAgentID = activeAgentID
         self.agents = agents
     }
@@ -240,6 +244,10 @@ public struct AppConfig: Codable, Hashable, Sendable {
         localTranscriptionLanguage = try container.decodeIfPresent(String.self, forKey: .localTranscriptionLanguage) ?? defaults.localTranscriptionLanguage
         localTranscriptionThreadCount = try container.decodeIfPresent(Int.self, forKey: .localTranscriptionThreadCount) ?? defaults.localTranscriptionThreadCount
         localTranscriptionUseGPU = try container.decodeIfPresent(Bool.self, forKey: .localTranscriptionUseGPU) ?? defaults.localTranscriptionUseGPU
+        localTranscriptionDefaultsRevision = try container.decodeIfPresent(
+            Int.self,
+            forKey: .localTranscriptionDefaultsRevision
+        ) ?? 0
         activeAgentID = try container.decodeIfPresent(String.self, forKey: .activeAgentID) ?? defaults.activeAgentID
         agents = try container.decodeIfPresent([Agent].self, forKey: .agents) ?? defaults.agents
     }
@@ -371,10 +379,11 @@ public extension AppConfig {
         noiseReductionEnabled: false,
         localTranscriptionEnabled: true,
         attachTranscriptToAI: true,
-        localTranscriptionModel: "ggml-tiny-q5_1",
-        localTranscriptionLanguage: "auto",
+        localTranscriptionModel: WhisperDefaults.defaultModelID,
+        localTranscriptionLanguage: WhisperDefaults.defaultLanguageCode,
         localTranscriptionThreadCount: 2,
         localTranscriptionUseGPU: false,
+        localTranscriptionDefaultsRevision: WhisperDefaults.currentDefaultsRevision,
         activeAgentID: "default",
         agents: defaultAgents
     )

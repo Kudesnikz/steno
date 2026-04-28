@@ -74,9 +74,13 @@ public final class AppViewModel {
         do {
             let loadResult = try configStore.load()
             loadedConfig = loadResult.config
+            let didMigrateWhisperDefaults = Self.migrateWhisperDefaultsIfNeeded(&loadedConfig)
             shouldShowOnboarding = !loadResult.didFindExistingConfig || loadedConfig.apiKey(for: loadedConfig.aiProvider).isEmpty
             if loadResult.didMigrateLegacyConfig {
                 initialStatus = "Legacy config migrated to ~/.steno/config.json"
+            }
+            if didMigrateWhisperDefaults {
+                try? configStore.save(loadedConfig)
             }
         } catch {
             loadedConfig = .default
@@ -230,8 +234,9 @@ public final class AppViewModel {
         let remoteModels = await whisperModelCatalogService.refreshCatalog()
         availableWhisperModels = await whisperModelStore.mergedCatalog(remoteModels: remoteModels)
         let installedIDs = Set(await whisperModelStore.installedModelIDs())
-        if !installedIDs.contains(config.localTranscriptionModel) {
-            config.localTranscriptionModel = "ggml-tiny-q5_1"
+        if !installedIDs.contains(config.localTranscriptionModel) ||
+            !WhisperModelCatalogService.isSupportedCatalogModelID(config.localTranscriptionModel) {
+            config.localTranscriptionModel = WhisperDefaults.defaultModelID
         }
         isRefreshingWhisperModels = false
     }
@@ -271,8 +276,9 @@ public final class AppViewModel {
             }
         }
         let installedIDs = Set(await whisperModelStore.installedModelIDs())
-        if !installedIDs.contains(config.localTranscriptionModel) {
-            config.localTranscriptionModel = "ggml-tiny-q5_1"
+        if !installedIDs.contains(config.localTranscriptionModel) ||
+            !WhisperModelCatalogService.isSupportedCatalogModelID(config.localTranscriptionModel) {
+            config.localTranscriptionModel = WhisperDefaults.defaultModelID
         }
         await refreshWhisperModels()
     }
@@ -659,6 +665,27 @@ public final class AppViewModel {
         AppLog.info("Opened output folder", category: .ui)
     }
 
+    private static func migrateWhisperDefaultsIfNeeded(_ config: inout AppConfig) -> Bool {
+        guard config.localTranscriptionDefaultsRevision < WhisperDefaults.currentDefaultsRevision else {
+            return false
+        }
+
+        let modelID = config.localTranscriptionModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if modelID.isEmpty ||
+            modelID == WhisperDefaults.legacyBundledModelID ||
+            !WhisperModelCatalogService.isSupportedCatalogModelID(modelID) {
+            config.localTranscriptionModel = WhisperDefaults.defaultModelID
+        }
+
+        let language = config.localTranscriptionLanguage.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if language.isEmpty || language == "auto" {
+            config.localTranscriptionLanguage = WhisperDefaults.defaultLanguageCode
+        }
+
+        config.localTranscriptionDefaultsRevision = WhisperDefaults.currentDefaultsRevision
+        return true
+    }
+
     private func normalizeConfig() {
         if AIProviderID(rawValue: config.aiProviderID) == nil {
             config.aiProvider = .gemini
@@ -673,8 +700,9 @@ public final class AppViewModel {
         if !config.agents.contains(where: { $0.id == config.activeAgentID }) {
             config.activeAgentID = config.agents.first?.id ?? "default"
         }
-        if config.localTranscriptionModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            config.localTranscriptionModel = "ggml-tiny-q5_1"
+        if config.localTranscriptionModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+            !WhisperModelCatalogService.isSupportedCatalogModelID(config.localTranscriptionModel) {
+            config.localTranscriptionModel = WhisperDefaults.defaultModelID
         }
         if config.localTranscriptionThreadCount < 1 {
             config.localTranscriptionThreadCount = 1
@@ -683,8 +711,9 @@ public final class AppViewModel {
             config.localTranscriptionThreadCount = 4
         }
         if config.localTranscriptionLanguage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            config.localTranscriptionLanguage = "auto"
+            config.localTranscriptionLanguage = WhisperDefaults.defaultLanguageCode
         }
+        config.localTranscriptionDefaultsRevision = WhisperDefaults.currentDefaultsRevision
     }
 
     private func startRecordingTimer() {

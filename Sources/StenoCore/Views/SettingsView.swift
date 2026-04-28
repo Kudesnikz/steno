@@ -218,8 +218,8 @@ public struct SettingsView: View {
                     .disabled(!viewModel.config.localTranscriptionEnabled)
 
                     Picker("Язык", selection: $viewModel.config.localTranscriptionLanguage) {
-                        Text("Auto").tag("auto")
                         Text("Русский").tag("ru")
+                        Text("Автоматически").tag("auto")
                         Text("English").tag("en")
                     }
                     .disabled(!viewModel.config.localTranscriptionEnabled)

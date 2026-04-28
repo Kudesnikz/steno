@@ -34,6 +34,9 @@ final class ConfigStoreTests: XCTestCase {
 
         XCTAssertFalse(result.didFindExistingConfig)
         XCTAssertEqual(result.config.modelName, AppConfig.default.modelName)
+        XCTAssertEqual(result.config.localTranscriptionModel, WhisperDefaults.defaultModelID)
+        XCTAssertEqual(result.config.localTranscriptionLanguage, WhisperDefaults.defaultLanguageCode)
+        XCTAssertEqual(result.config.localTranscriptionDefaultsRevision, WhisperDefaults.currentDefaultsRevision)
         XCTAssertEqual(result.config.agents.count, AppConfig.defaultAgents.count)
     }
 

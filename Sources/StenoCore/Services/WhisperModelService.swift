@@ -77,10 +77,22 @@ public actor WhisperModelCatalogService {
         )
     }
 
+    static func isSupportedCatalogFileName(_ fileName: String) -> Bool {
+        guard fileName.hasPrefix("ggml-"),
+              fileName.hasSuffix(".bin") else {
+            return false
+        }
+        let id = fileName.replacingOccurrences(of: ".bin", with: "")
+        return isSupportedCatalogModelID(id)
+    }
+
+    static func isSupportedCatalogModelID(_ id: String) -> Bool {
+        !ParsedWhisperModelID(id: id).isEnglishOnly
+    }
+
     private static func descriptor(from entry: HuggingFaceTreeEntry) -> WhisperModelDescriptor? {
         guard entry.type == "file",
-              entry.path.hasPrefix("ggml-"),
-              entry.path.hasSuffix(".bin") else {
+              isSupportedCatalogFileName(entry.path) else {
             return nil
         }
         return descriptor(
@@ -93,7 +105,7 @@ public actor WhisperModelCatalogService {
 
 public actor WhisperModelStore {
     private let fileManager: FileManager
-    private let bundledModelID = "ggml-tiny-q5_1"
+    private let bundledModelID = WhisperDefaults.bundledModelID
 
     public init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
@@ -133,7 +145,7 @@ public actor WhisperModelStore {
             return []
         }
         return urls
-            .filter { $0.pathExtension == "bin" && $0.lastPathComponent.hasPrefix("ggml-") }
+            .filter { WhisperModelCatalogService.isSupportedCatalogFileName($0.lastPathComponent) }
             .map { $0.deletingPathExtension().lastPathComponent }
             .sorted()
     }
@@ -218,10 +230,11 @@ private struct ParsedWhisperModelID {
     var family: String
     var quantization: String
     var language: String
+    var isEnglishOnly: Bool
 
     init(id: String) {
         var normalizedID = id.replacingOccurrences(of: "ggml-", with: "")
-        let isEnglishOnly = normalizedID.contains(".en")
+        isEnglishOnly = normalizedID.contains(".en")
         normalizedID = normalizedID.replacingOccurrences(of: ".en", with: "")
         var parts = normalizedID.split(separator: "-").map(String.init)
         language = isEnglishOnly ? "English only" : "Multilingual"

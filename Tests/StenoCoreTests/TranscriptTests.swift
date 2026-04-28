@@ -6,7 +6,7 @@ final class TranscriptTests: XCTestCase {
     func testTranscriptMarkdownIncludesTimestampsSourcesAndText() {
         let document = TranscriptDocument(
             baseName: "Meet_24.06.2024_15:30:00",
-            modelName: "ggml-tiny-q5_1",
+            modelName: WhisperDefaults.defaultModelID,
             language: "ru",
             segments: [
                 TranscriptSegment(source: .system, startTimeSeconds: 1.2, endTimeSeconds: 4.7, text: "Первый фрагмент"),
@@ -16,7 +16,7 @@ final class TranscriptTests: XCTestCase {
 
         let markdown = document.timestampedMarkdown
 
-        XCTAssertTrue(markdown.contains("Model: ggml-tiny-q5_1"))
+        XCTAssertTrue(markdown.contains("Model: \(WhisperDefaults.defaultModelID)"))
         XCTAssertTrue(markdown.contains("[00:00:01-00:00:05] [System] Первый фрагмент"))
         XCTAssertTrue(markdown.contains("[00:00:05-00:00:07] [Microphone] Ответ"))
     }
@@ -34,10 +34,10 @@ final class TranscriptTests: XCTestCase {
         XCTAssertTrue(withTranscript.contains("[00:00:01] hello"))
     }
 
-    func testBundledTinyWhisperModelIsAvailable() throws {
-        let url = try WhisperModelLocator().modelURL(named: "ggml-tiny-q5_1")
+    func testBundledDefaultWhisperModelIsAvailable() throws {
+        let url = try WhisperModelLocator().modelURL(named: WhisperDefaults.defaultModelID)
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
-        XCTAssertEqual(url.lastPathComponent, "ggml-tiny-q5_1.bin")
+        XCTAssertEqual(url.lastPathComponent, "\(WhisperDefaults.defaultModelID).bin")
     }
 }
