@@ -106,6 +106,11 @@ public actor RealtimeTranscriptionCoordinator {
             }
             states[source] = state
 
+            guard AudioActivityDetector.containsSpeech(samples: samples, source: source) else {
+                AppLog.debug("Skipping silent transcription window source=\(source.rawValue)", category: .recording)
+                continue
+            }
+
             let segments = try await transcriptionService.transcribe(
                 samples: samples,
                 source: source,
