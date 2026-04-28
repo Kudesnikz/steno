@@ -43,6 +43,8 @@ mkdir -p "$APP_MACOS" "$APP_RESOURCES/assets" "$APP_RESOURCES/bin"
 cp "$BUILD_BINARY" "$APP_BINARY"
 chmod +x "$APP_BINARY"
 
+find "$BUILD_BIN_DIR" -maxdepth 1 -name '*.bundle' -type d -exec cp -R {} "$APP_RESOURCES/" \;
+
 cp -R assets/. "$APP_RESOURCES/assets/"
 if [ -d bin ]; then
   cp -R bin/. "$APP_RESOURCES/bin/"
