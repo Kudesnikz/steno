@@ -6,8 +6,6 @@ import SwiftUI
 public struct ContentView: View {
     @Bindable private var viewModel: AppViewModel
     @Environment(\.scenePhase) private var scenePhase
-    @State private var renameText = ""
-    @State private var isRenaming = false
     @State private var showDeleteConfirmation = false
 
     public init(viewModel: AppViewModel) {
@@ -16,16 +14,14 @@ public struct ContentView: View {
 
     public var body: some View {
         HSplitView {
-            SidebarView(viewModel: viewModel)
-                .frame(minWidth: 220, idealWidth: 280, maxWidth: 320, maxHeight: .infinity)
-
-            DetailView(
+            SidebarView(
                 viewModel: viewModel,
-                renameText: $renameText,
-                isRenaming: $isRenaming,
                 showDeleteConfirmation: $showDeleteConfirmation
             )
-            .frame(minWidth: 640, maxWidth: .infinity, maxHeight: .infinity)
+                .frame(minWidth: 220, idealWidth: 280, maxWidth: 320, maxHeight: .infinity)
+
+            DetailView(viewModel: viewModel)
+                .frame(minWidth: 640, maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 920, minHeight: 620)
         .toolbar {
@@ -166,6 +162,9 @@ private struct ToolbarButtonLabel: View {
 
 private struct SidebarView: View {
     @Bindable var viewModel: AppViewModel
+    @Binding var showDeleteConfirmation: Bool
+    @State private var renamingSessionID: MeetingSession.ID?
+    @State private var renameText = ""
 
     var body: some View {
         List(selection: $viewModel.selectedSessionID) {
@@ -174,15 +173,32 @@ private struct SidebarView: View {
                     SidebarPlaceholderRow()
                 } else {
                     ForEach(viewModel.sessions) { session in
-                        SessionRow(session: session)
+                        SessionRow(
+                            session: session,
+                            isRenaming: renamingSessionID == session.id,
+                            renameText: $renameText,
+                            onRenameButton: {
+                                if renamingSessionID == session.id {
+                                    commitRename(session)
+                                } else {
+                                    beginRename(session)
+                                }
+                            },
+                            onCommitRename: {
+                                commitRename(session)
+                            },
+                            onCancelRename: cancelRename,
+                            onDelete: {
+                                requestDelete(session)
+                            }
+                        )
                             .tag(session.id)
                             .contextMenu {
                                 Button("Rename") {
-                                    viewModel.selectedSessionID = session.id
+                                    beginRename(session)
                                 }
                                 Button("Delete", role: .destructive) {
-                                    viewModel.selectedSessionID = session.id
-                                    viewModel.deleteSelectedSession()
+                                    requestDelete(session)
                                 }
                             }
                     }
@@ -194,6 +210,40 @@ private struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        .onChange(of: viewModel.sessions.map(\.id)) { _, sessionIDs in
+            if let renamingSessionID, !sessionIDs.contains(renamingSessionID) {
+                cancelRename()
+            }
+        }
+    }
+
+    private func beginRename(_ session: MeetingSession) {
+        viewModel.selectedSessionID = session.id
+        renamingSessionID = session.id
+        renameText = session.displayName
+    }
+
+    private func commitRename(_ session: MeetingSession) {
+        guard renamingSessionID == session.id else {
+            return
+        }
+
+        let trimmedName = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedName.isEmpty && trimmedName != session.displayName {
+            viewModel.selectedSessionID = session.id
+            viewModel.renameSelectedSession(to: trimmedName)
+        }
+        cancelRename()
+    }
+
+    private func cancelRename() {
+        renamingSessionID = nil
+        renameText = ""
+    }
+
+    private func requestDelete(_ session: MeetingSession) {
+        viewModel.selectedSessionID = session.id
+        showDeleteConfirmation = true
     }
 }
 
@@ -249,6 +299,13 @@ private struct SidebarStatusRow: View {
 
 private struct SessionRow: View {
     var session: MeetingSession
+    var isRenaming: Bool
+    @Binding var renameText: String
+    var onRenameButton: () -> Void
+    var onCommitRename: () -> Void
+    var onCancelRename: () -> Void
+    var onDelete: () -> Void
+    @FocusState private var isRenameFieldFocused: Bool
 
     var body: some View {
         HStack(spacing: 10) {
@@ -257,12 +314,40 @@ private struct SessionRow: View {
                 .frame(width: 16)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(session.displayName)
-                    .lineLimit(1)
+                if isRenaming {
+                    TextField("Recording name", text: $renameText)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($isRenameFieldFocused)
+                        .lineLimit(1)
+                        .onSubmit(onCommitRename)
+                        .onExitCommand(perform: onCancelRename)
+                        .onAppear {
+                            isRenameFieldFocused = true
+                        }
+                } else {
+                    Text(session.displayName)
+                        .lineLimit(1)
+                }
                 Text(StenoFormatters.megabytes(session.totalSizeMB))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 4) {
+                SidebarActionIconButton(
+                    systemImage: "pencil",
+                    help: isRenaming ? "Save name" : "Rename",
+                    action: onRenameButton
+                )
+
+                SidebarActionIconButton(
+                    systemImage: "trash",
+                    help: "Delete",
+                    role: .destructive,
+                    action: onDelete
+                )
             }
         }
     }
@@ -270,9 +355,6 @@ private struct SessionRow: View {
 
 private struct DetailView: View {
     @Bindable var viewModel: AppViewModel
-    @Binding var renameText: String
-    @Binding var isRenaming: Bool
-    @Binding var showDeleteConfirmation: Bool
 
     var body: some View {
         if let session = viewModel.selectedSession {
@@ -313,43 +395,18 @@ private struct DetailView: View {
 
     @ViewBuilder
     private func header(_ session: MeetingSession) -> some View {
-        HStack(spacing: 12) {
-            if isRenaming {
-                TextField("Recording name", text: $renameText)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit {
-                        viewModel.renameSelectedSession(to: renameText)
-                        isRenaming = false
-                    }
-            } else {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(session.displayName)
-                        .font(.headline)
-                    Text(session.videoURL.path)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(session.displayName)
+                    .font(.headline)
+                Text(session.videoURL.path)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
 
             Spacer()
-
-            Button {
-                renameText = session.displayName
-                isRenaming.toggle()
-                if !isRenaming {
-                    viewModel.renameSelectedSession(to: renameText)
-                }
-            } label: {
-                Label(isRenaming ? "Save" : "Rename", systemImage: isRenaming ? "checkmark" : "pencil")
-            }
-
-            Button(role: .destructive) {
-                showDeleteConfirmation = true
-            } label: {
-                Label("Delete", systemImage: "trash")
-            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
@@ -358,6 +415,25 @@ private struct DetailView: View {
 
     private func agentName(_ agentID: String) -> String {
         viewModel.config.agent(id: agentID)?.name ?? agentID
+    }
+}
+
+private struct SidebarActionIconButton: View {
+    var systemImage: String
+    var help: String
+    var role: ButtonRole?
+    var action: () -> Void
+
+    var body: some View {
+        Button(role: role, action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 12, weight: .medium))
+                .frame(width: 18, height: 18)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(role == .destructive ? .red : .secondary)
+        .opacity(0.55)
+        .help(help)
     }
 }
 
