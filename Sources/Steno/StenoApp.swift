@@ -6,7 +6,6 @@ import SwiftUI
 struct StenoApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var viewModel = AppViewModel()
-    @State private var statusBarController = StatusBarController()
 
     var body: some Scene {
         WindowGroup("Steno", id: "main") {
@@ -14,7 +13,7 @@ struct StenoApp: App {
                 .background {
                     StatusBarBridgeView(
                         viewModel: viewModel,
-                        controller: statusBarController
+                        appDelegate: appDelegate
                     )
                 }
                 .onAppear {
@@ -70,32 +69,37 @@ struct StenoApp: App {
 
 private struct StatusBarBridgeView: View {
     @Bindable var viewModel: AppViewModel
-    let controller: StatusBarController
+    let appDelegate: AppDelegate
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Color.clear
             .frame(width: 0, height: 0)
             .onAppear {
-                controller.configure(
-                    viewModel: viewModel,
-                    showMainWindow: {
-                        NSApp.setActivationPolicy(.regular)
-                        NSApp.activate(ignoringOtherApps: true)
-                        openWindow(id: "main")
-                    },
-                    showSettings: {
-                        NSApp.setActivationPolicy(.regular)
-                        NSApp.activate(ignoringOtherApps: true)
-                        openWindow(id: "main")
-                        viewModel.showSettings = true
-                    }
-                )
-                controller.update(snapshot)
+                configureStatusBar()
             }
             .onChange(of: snapshot) { _, newSnapshot in
-                controller.update(newSnapshot)
+                appDelegate.statusBarController?.update(newSnapshot)
             }
+    }
+
+    private func configureStatusBar() {
+        let controller = appDelegate.makeStatusBarController()
+        controller.configure(
+            viewModel: viewModel,
+            showMainWindow: {
+                NSApp.setActivationPolicy(.regular)
+                NSApp.activate(ignoringOtherApps: true)
+                openWindow(id: "main")
+            },
+            showSettings: {
+                NSApp.setActivationPolicy(.regular)
+                NSApp.activate(ignoringOtherApps: true)
+                openWindow(id: "main")
+                viewModel.showSettings = true
+            }
+        )
+        controller.update(snapshot)
     }
 
     private var snapshot: StatusBarSnapshot {
@@ -108,7 +112,20 @@ private struct StatusBarBridgeView: View {
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private(set) var statusBarController: StatusBarController?
+
+    func makeStatusBarController() -> StatusBarController {
+        if let statusBarController {
+            return statusBarController
+        }
+
+        let controller = StatusBarController()
+        statusBarController = controller
+        return controller
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppLog.info("Application did finish launching", category: .app)
         NSApp.setActivationPolicy(.regular)
