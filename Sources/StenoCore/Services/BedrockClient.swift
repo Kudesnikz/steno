@@ -6,7 +6,7 @@ public actor BedrockClient {
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
-    public init(urlSession: URLSession = .shared) {
+    public init(urlSession: URLSession = AIURLSessionFactory.makeLongRunningSession()) {
         self.urlSession = urlSession
     }
 
@@ -21,7 +21,16 @@ public actor BedrockClient {
             ],
             system: [BedrockTextBlock(text: "Health check")]
         )
-        _ = try await converse(body: body, config: config, modelID: model.modelID, context: "health check")
+        _ = try await converse(
+            body: body,
+            config: config,
+            modelID: model.modelID,
+            context: "health check",
+            options: AIHTTPRequestOptions(
+                phase: .checkingConnection(provider: AIProviderID.amazonBedrock.displayName),
+                timeout: AIHTTPTimeouts.healthCheck
+            )
+        )
     }
 
     /// Sends the meeting video through Bedrock Converse using a native `video` content block.
@@ -30,9 +39,25 @@ public actor BedrockClient {
         transcript: AITranscriptContext?,
         config: AppConfig,
         model: AIModelReference,
-        agent: Agent
+        agent: Agent,
+        progress: AIProgressHandler? = nil
     ) async throws -> AIProcessingResult {
         let start = Date()
+        await progress?(.preparingMedia(provider: model.providerID.displayName))
+        try AIMediaLimits.validateSingleRequestVideo(
+            url: videoURL,
+            provider: model.providerID,
+            limitBytes: AIMediaLimits.bedrockSingleRequestVideoBytes
+        )
+        await progress?(
+            .uploadingMedia(
+                provider: model.providerID.displayName,
+                fileName: videoURL.lastPathComponent,
+                fileIndex: 1,
+                totalFiles: 1,
+                sizeBytes: (try? videoURL.fileSizeBytes()) ?? 0
+            )
+        )
         let body = BedrockConverseRequest(
             messages: [
                 BedrockMessage(
@@ -46,7 +71,17 @@ public actor BedrockClient {
             system: [BedrockTextBlock(text: PromptSecurity.systemPrompt(for: agent))]
         )
 
-        let response = try await converse(body: body, config: config, modelID: model.modelID, context: "generate report")
+        await progress?(.generatingReport(provider: model.providerID.displayName))
+        let response = try await converse(
+            body: body,
+            config: config,
+            modelID: model.modelID,
+            context: "generate report",
+            options: AIHTTPRequestOptions(
+                phase: .generatingReport(provider: model.providerID.displayName),
+                timeout: AIHTTPTimeouts.generation
+            )
+        )
         let text = response.output.message.content.compactMap(\.text).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
             throw AIClientError.emptyResponse
@@ -77,7 +112,12 @@ public actor BedrockClient {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         try sign(request: &request, body: Data(), config: config, region: region, service: "bedrock")
 
-        let (data, response) = try await urlSession.data(for: request)
+        let (data, response) = try await AIHTTPClient.data(
+            for: request,
+            session: urlSession,
+            phase: .generatingReport(provider: AIProviderID.amazonBedrock.displayName),
+            timeout: AIHTTPTimeouts.modelCatalog
+        )
         try validate(response, data: data, provider: AIProviderID.amazonBedrock.displayName, context: "GET /foundation-models")
         let models = try decoder.decode(BedrockListModelsResponse.self, from: data)
         return models.modelSummaries.map {
@@ -93,7 +133,8 @@ public actor BedrockClient {
         body: BedrockConverseRequest,
         config: AppConfig,
         modelID: String,
-        context: String
+        context: String,
+        options: AIHTTPRequestOptions
     ) async throws -> BedrockConverseResponse {
         let region = normalizedRegion(config.awsRegion)
         let path = "/model/\(modelID)/converse"
@@ -102,10 +143,15 @@ public actor BedrockClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = bodyData
         try sign(request: &request, body: bodyData, config: config, region: region, service: "bedrock")
 
-        let (data, response) = try await urlSession.data(for: request)
+        let (data, response) = try await AIHTTPClient.data(
+            for: request,
+            body: bodyData,
+            session: urlSession,
+            phase: options.phase,
+            timeout: options.timeout
+        )
         try validate(response, data: data, provider: AIProviderID.amazonBedrock.displayName, context: "POST \(path) \(context)")
         return try decoder.decode(BedrockConverseResponse.self, from: data)
     }

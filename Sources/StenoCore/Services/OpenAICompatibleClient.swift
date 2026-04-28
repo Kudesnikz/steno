@@ -5,7 +5,7 @@ public actor OpenAICompatibleClient {
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
-    public init(urlSession: URLSession = .shared) {
+    public init(urlSession: URLSession = AIURLSessionFactory.makeLongRunningSession()) {
         self.urlSession = urlSession
     }
 
@@ -19,7 +19,16 @@ public actor OpenAICompatibleClient {
             ],
             temperature: 0
         )
-        _ = try await sendChatRequest(body: body, config: config, model: model, context: "health check")
+        _ = try await sendChatRequest(
+            body: body,
+            config: config,
+            model: model,
+            context: "health check",
+            options: AIHTTPRequestOptions(
+                phase: .checkingConnection(provider: model.providerID.displayName),
+                timeout: AIHTTPTimeouts.healthCheck
+            )
+        )
     }
 
     /// Sends the meeting video as a base64 `video_url` content part.
@@ -28,9 +37,25 @@ public actor OpenAICompatibleClient {
         transcript: AITranscriptContext?,
         config: AppConfig,
         model: AIModelReference,
-        agent: Agent
+        agent: Agent,
+        progress: AIProgressHandler? = nil
     ) async throws -> AIProcessingResult {
         let start = Date()
+        await progress?(.preparingMedia(provider: model.providerID.displayName))
+        try AIMediaLimits.validateSingleRequestVideo(
+            url: videoURL,
+            provider: model.providerID,
+            limitBytes: AIMediaLimits.openAICompatibleSingleRequestVideoBytes
+        )
+        await progress?(
+            .uploadingMedia(
+                provider: model.providerID.displayName,
+                fileName: videoURL.lastPathComponent,
+                fileIndex: 1,
+                totalFiles: 1,
+                sizeBytes: (try? videoURL.fileSizeBytes()) ?? 0
+            )
+        )
         let videoDataURL = try videoURL.dataURL
         let prompt = AIPromptBuilder.meetingAnalysisPrompt(videoURL: videoURL, transcript: transcript)
         let systemPrompt = PromptSecurity.systemPrompt(for: agent)
@@ -49,7 +74,17 @@ public actor OpenAICompatibleClient {
             temperature: 0.2
         )
 
-        let response = try await sendChatRequest(body: body, config: config, model: model, context: "generate report")
+        await progress?(.generatingReport(provider: model.providerID.displayName))
+        let response = try await sendChatRequest(
+            body: body,
+            config: config,
+            model: model,
+            context: "generate report",
+            options: AIHTTPRequestOptions(
+                phase: .generatingReport(provider: model.providerID.displayName),
+                timeout: AIHTTPTimeouts.generation
+            )
+        )
         let text = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
             throw AIClientError.emptyResponse
@@ -78,7 +113,12 @@ public actor OpenAICompatibleClient {
         request.httpMethod = "GET"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        let (data, response) = try await urlSession.data(for: request)
+        let (data, response) = try await AIHTTPClient.data(
+            for: request,
+            session: urlSession,
+            phase: .generatingReport(provider: "OpenAI-compatible"),
+            timeout: AIHTTPTimeouts.modelCatalog
+        )
         try validate(response, data: data, provider: "OpenAI-compatible", context: "GET \(sanitizedEndpoint(url))")
         let models = try decoder.decode(OpenAIModelsResponse.self, from: data)
         return models.data.map(\.id)
@@ -88,7 +128,8 @@ public actor OpenAICompatibleClient {
         body: OpenAIChatRequest,
         config: AppConfig,
         model: AIModelReference,
-        context: String
+        context: String,
+        options: AIHTTPRequestOptions
     ) async throws -> OpenAIChatResponse {
         let url = try endpoint(baseURL: config.baseURL(for: model.providerID), path: "chat/completions")
         var request = URLRequest(url: url)
@@ -98,9 +139,14 @@ public actor OpenAICompatibleClient {
         if model.providerID == .openRouter {
             request.setValue("Steno", forHTTPHeaderField: "X-Title")
         }
-        request.httpBody = try encoder.encode(body)
 
-        let (data, response) = try await urlSession.data(for: request)
+        let (data, response) = try await AIHTTPClient.data(
+            for: request,
+            body: try encoder.encode(body),
+            session: urlSession,
+            phase: options.phase,
+            timeout: options.timeout
+        )
         try validate(response, data: data, provider: model.providerID.displayName, context: "POST \(sanitizedEndpoint(url)) \(context)")
         return try decoder.decode(OpenAIChatResponse.self, from: data)
     }

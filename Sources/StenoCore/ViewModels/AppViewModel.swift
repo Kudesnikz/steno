@@ -553,6 +553,43 @@ public final class AppViewModel {
         AppLog.info("AI processing requested session=\(session.baseName) agent=\(agent.id)", category: .ai)
 
         let snapshotConfig = config
+        let processingStartedAt = ISO8601DateFormatter().string(from: Date())
+        let processingStartDate = Date()
+        let initialReport = ReportInfo(
+            agentID: agent.id,
+            agentName: agent.name,
+            model: snapshotConfig.modelName,
+            createdAt: processingStartedAt,
+            processingDurationSeconds: 0,
+            tokens: ReportTokens(input: 0, output: 0, total: 0),
+            outputPath: "",
+            status: AIProcessingPhase.preparingMedia(provider: snapshotConfig.aiProvider.displayName).status
+        )
+        try? sessionStore.upsertReportMetadata(baseName: session.baseName, report: initialReport)
+        refreshSessions()
+
+        let progress: AIProgressHandler = { [weak self] phase in
+            await MainActor.run {
+                guard let self else {
+                    return
+                }
+                self.statusMessage = phase.statusMessage
+                let report = ReportInfo(
+                    agentID: agent.id,
+                    agentName: agent.name,
+                    model: snapshotConfig.modelName,
+                    createdAt: processingStartedAt,
+                    processingDurationSeconds: Int(Date().timeIntervalSince(processingStartDate)),
+                    tokens: ReportTokens(input: 0, output: 0, total: 0),
+                    outputPath: "",
+                    status: phase.status
+                )
+                try? self.sessionStore.upsertReportMetadata(baseName: session.baseName, report: report)
+                self.refreshSessions()
+                self.selectedSessionID = session.id
+            }
+        }
+
         aiTask = Task { [weak self] in
             guard let self else {
                 return
@@ -563,11 +600,14 @@ public final class AppViewModel {
                     audioURLs: session.audioURLs,
                     transcript: self.transcriptContext(for: session, config: snapshotConfig),
                     config: snapshotConfig,
-                    agent: agent
+                    agent: agent,
+                    progress: progress
                 )
+                await progress(.savingResult(fileName: "\(session.baseName)_protocol_\(agent.id).txt"))
                 let outputURL = try self.sessionStore.saveReportText(result.text, baseName: session.baseName, agentID: agent.id)
                 var metadata = result.metadata
                 metadata.outputFileName = outputURL.lastPathComponent
+                metadata.createdAt = processingStartedAt
 
                 let report = ReportInfo(
                     agentID: agent.id,
@@ -579,7 +619,7 @@ public final class AppViewModel {
                     outputPath: metadata.outputFileName,
                     status: "success"
                 )
-                try self.sessionStore.appendReportMetadata(baseName: session.baseName, report: report)
+                try self.sessionStore.upsertReportMetadata(baseName: session.baseName, report: report)
 
                 self.config.usedTokens += metadata.tokensTotal
                 self.config.lastRequestTokens = metadata.tokensTotal
@@ -591,6 +631,17 @@ public final class AppViewModel {
                 AppLog.info("AI processing completed session=\(session.baseName) tokens=\(metadata.tokensTotal)", category: .ai)
             } catch is CancellationError {
                 self.statusMessage = "AI processing cancelled"
+                let report = ReportInfo(
+                    agentID: agent.id,
+                    agentName: agent.name,
+                    model: snapshotConfig.modelName,
+                    createdAt: processingStartedAt,
+                    processingDurationSeconds: Int(Date().timeIntervalSince(processingStartDate)),
+                    tokens: ReportTokens(input: 0, output: 0, total: 0),
+                    outputPath: "",
+                    status: "cancelled"
+                )
+                try? self.sessionStore.upsertReportMetadata(baseName: session.baseName, report: report)
                 AppLog.warning("AI processing cancelled", category: .ai)
             } catch {
                 let safeMessage = self.masked(error.localizedDescription, config: snapshotConfig)
@@ -598,14 +649,14 @@ public final class AppViewModel {
                     agentID: agent.id,
                     agentName: agent.name,
                     model: snapshotConfig.modelName,
-                    createdAt: ISO8601DateFormatter().string(from: Date()),
-                    processingDurationSeconds: 0,
+                    createdAt: processingStartedAt,
+                    processingDurationSeconds: Int(Date().timeIntervalSince(processingStartDate)),
                     tokens: ReportTokens(input: 0, output: 0, total: 0),
                     outputPath: "",
                     status: "error",
                     error: String(safeMessage.prefix(200))
                 )
-                try? self.sessionStore.appendReportMetadata(baseName: session.baseName, report: report)
+                try? self.sessionStore.upsertReportMetadata(baseName: session.baseName, report: report)
                 self.errorMessage = "AI Ошибка: \(safeMessage)"
                 AppLog.error("AI processing failed: \(safeMessage)", category: .ai)
                 self.refreshSessions()

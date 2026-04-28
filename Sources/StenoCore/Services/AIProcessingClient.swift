@@ -40,17 +40,20 @@ public actor AIProcessingClient {
     private let openAICompatibleClient: OpenAICompatibleClient
     private let bedrockClient: BedrockClient
     private let modelCatalogService: AIModelCatalogService
+    private let mediaPreparationService: AIMediaPreparationService
 
     public init(
         geminiClient: GeminiClient = GeminiClient(),
         openAICompatibleClient: OpenAICompatibleClient = OpenAICompatibleClient(),
         bedrockClient: BedrockClient = BedrockClient(),
-        modelCatalogService: AIModelCatalogService = AIModelCatalogService()
+        modelCatalogService: AIModelCatalogService = AIModelCatalogService(),
+        mediaPreparationService: AIMediaPreparationService = AIMediaPreparationService()
     ) {
         self.geminiClient = geminiClient
         self.openAICompatibleClient = openAICompatibleClient
         self.bedrockClient = bedrockClient
         self.modelCatalogService = modelCatalogService
+        self.mediaPreparationService = mediaPreparationService
     }
 
     /// Validates credentials, selected model allowlist membership, and provider reachability.
@@ -90,19 +93,49 @@ public actor AIProcessingClient {
         audioURLs: [URL],
         transcript: AITranscriptContext?,
         config: AppConfig,
-        agent: Agent
+        agent: Agent,
+        progress: AIProgressHandler? = nil
     ) async throws -> AIProcessingResult {
         let model = try selectedAllowedModel(config: config)
         try requireCredentials(config: config, providerID: model.providerID)
         try await verifyDynamicVideoCapabilityIfNeeded(config: config, model: model)
+        let preparedMedia = try await mediaPreparationService.prepareVideoIfNeeded(
+            videoURL: videoURL,
+            providerID: model.providerID,
+            progress: progress
+        )
+        defer {
+            mediaPreparationService.cleanup(preparedMedia)
+        }
 
         switch model.providerID {
         case .gemini:
-            return try await geminiClient.generateReport(videoURL: videoURL, audioURLs: audioURLs, transcript: transcript, config: config, agent: agent)
+            return try await geminiClient.generateReport(
+                videoURL: preparedMedia.videoURL,
+                audioURLs: audioURLs,
+                transcript: transcript,
+                config: config,
+                agent: agent,
+                progress: progress
+            )
         case .kimi, .qwen, .openRouter:
-            return try await openAICompatibleClient.generateReport(videoURL: videoURL, transcript: transcript, config: config, model: model, agent: agent)
+            return try await openAICompatibleClient.generateReport(
+                videoURL: preparedMedia.videoURL,
+                transcript: transcript,
+                config: config,
+                model: model,
+                agent: agent,
+                progress: progress
+            )
         case .amazonBedrock:
-            return try await bedrockClient.generateReport(videoURL: videoURL, transcript: transcript, config: config, model: model, agent: agent)
+            return try await bedrockClient.generateReport(
+                videoURL: preparedMedia.videoURL,
+                transcript: transcript,
+                config: config,
+                model: model,
+                agent: agent,
+                progress: progress
+            )
         }
     }
 

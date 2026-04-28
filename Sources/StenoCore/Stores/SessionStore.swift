@@ -152,6 +152,20 @@ public struct SessionStore {
         AppLog.info("Appended report metadata for \(baseName), status=\(report.status)", category: .sessions)
     }
 
+    public func upsertReportMetadata(baseName: String, report: ReportInfo) throws {
+        let metadataURL = saveDirectory.appending(path: "\(baseName).json")
+        var metadata = loadMetadata(url: metadataURL)
+        var reports = metadata.reports ?? []
+        if let index = reports.firstIndex(where: { $0.agentID == report.agentID && $0.createdAt == report.createdAt }) {
+            reports[index] = report
+        } else {
+            reports.append(report)
+        }
+        metadata.reports = reports
+        try saveMetadata(metadata, to: metadataURL)
+        AppLog.info("Updated report metadata for \(baseName), status=\(report.status)", category: .sessions)
+    }
+
     public func loadReportText(url: URL) throws -> String {
         try String(contentsOf: url, encoding: .utf8)
     }

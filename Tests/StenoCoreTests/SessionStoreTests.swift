@@ -67,6 +67,45 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertEqual(rescanned.first?.displayName, "Renamed")
     }
 
+    func testUpsertReportMetadataReplacesMatchingAgentAndCreatedAt() throws {
+        let directory = try temporaryDirectory()
+        let baseName = "Meet_24.06.2024_15:30:00"
+        try Data("video".utf8).write(to: directory.appending(path: "\(baseName).mp4"))
+
+        let store = SessionStore(saveDirectory: directory)
+        let started = "2026-04-28T13:00:00Z"
+        let inProgress = ReportInfo(
+            agentID: "default",
+            agentName: "Стандартный протокол",
+            model: "gemini-3-flash-preview",
+            createdAt: started,
+            processingDurationSeconds: 10,
+            tokens: ReportTokens(input: 0, output: 0, total: 0),
+            outputPath: "",
+            status: "uploading_media"
+        )
+        let success = ReportInfo(
+            agentID: "default",
+            agentName: "Стандартный протокол",
+            model: "gemini-3-flash-preview",
+            createdAt: started,
+            processingDurationSeconds: 120,
+            tokens: ReportTokens(input: 10, output: 20, total: 30),
+            outputPath: "\(baseName)_protocol_default.txt",
+            status: "success"
+        )
+
+        try store.upsertReportMetadata(baseName: baseName, report: inProgress)
+        try store.upsertReportMetadata(baseName: baseName, report: success)
+
+        let session = try XCTUnwrap(store.scanSessions().first)
+        let reports = try XCTUnwrap(session.metadata.reports)
+        XCTAssertEqual(reports.count, 1)
+        XCTAssertEqual(reports[0].status, "success")
+        XCTAssertEqual(reports[0].tokens.total, 30)
+        XCTAssertEqual(reports[0].outputPath, "\(baseName)_protocol_default.txt")
+    }
+
     func testDeleteArtifactsRemovesOnlyMatchingBaseName() throws {
         let directory = try temporaryDirectory()
         let baseName = "Meet_24.06.2024_15:30:00"
