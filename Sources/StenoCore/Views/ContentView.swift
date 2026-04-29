@@ -13,84 +13,23 @@ public struct ContentView: View {
     }
 
     public var body: some View {
-        HSplitView {
-            SidebarView(
-                viewModel: viewModel,
-                showDeleteConfirmation: $showDeleteConfirmation
-            )
-                .frame(minWidth: 220, idealWidth: 280, maxWidth: 320, maxHeight: .infinity)
+        VStack(spacing: 0) {
+            MainWindowToolbar(viewModel: viewModel)
 
-            DetailView(viewModel: viewModel)
-                .frame(minWidth: 640, maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .frame(minWidth: 920, minHeight: 620)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                HStack(spacing: 8) {
-                    if viewModel.isProcessing || viewModel.isFinalizingRecording {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-                    if viewModel.isProcessing {
-                        Button("Cancel") {
-                            viewModel.cancelGeneration()
-                        }
-                    }
+            Divider()
 
-                    if viewModel.shouldShowCaptureDisplayPicker {
-                        Picker("Monitor", selection: Binding(
-                            get: { viewModel.config.videoDeviceIndex },
-                            set: { viewModel.selectCaptureDisplay(id: $0) }
-                        )) {
-                            ForEach(viewModel.availableCaptureDisplays) { display in
-                                Text(display.menuTitle).tag(display.id)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .frame(width: 190)
-                        .help("Screen to record")
-                    }
+            HSplitView {
+                SidebarView(
+                    viewModel: viewModel,
+                    showDeleteConfirmation: $showDeleteConfirmation
+                )
+                    .frame(minWidth: 220, idealWidth: 280, maxWidth: 320, maxHeight: .infinity)
 
-                    Picker("Agent", selection: $viewModel.config.activeAgentID) {
-                        ForEach(viewModel.config.agents) { agent in
-                            Text(agent.name).tag(agent.id)
-                        }
-                    }
-                    .frame(width: 190)
-                    .help("Agent for AI report generation")
-
-                    Button {
-                        if viewModel.isRecording {
-                            Task { await viewModel.stopRecording() }
-                        } else {
-                            Task { await viewModel.startRecording() }
-                        }
-                    } label: {
-                        ToolbarButtonLabel(title: recordingButtonTitle, systemImage: recordingButtonIcon)
-                    }
-                    .tint(viewModel.isRecording ? .secondary : .red)
-                    .disabled(viewModel.isFinalizingRecording || (viewModel.isProcessing && !viewModel.isRecording))
-
-                    Button {
-                        viewModel.generateSelectedReport()
-                    } label: {
-                        ToolbarButtonLabel(title: "Generate", systemImage: "bolt.fill")
-                    }
-                    .disabled(!viewModel.canGenerate)
-
-                    Button {
-                        viewModel.showSettings = true
-                    } label: {
-                        Label("Settings", systemImage: "gearshape")
-                    }
-                }
-                .controlSize(.small)
+                DetailView(viewModel: viewModel)
+                    .frame(minWidth: 640, maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .toolbar(removing: .title)
-        .background {
-            WindowTitlebarConfigurationView()
-        }
+        .frame(minWidth: 920, minHeight: 620)
         .sheet(isPresented: $viewModel.showSettings) {
             SettingsView(viewModel: viewModel)
                 .frame(width: 740, height: 560)
@@ -136,6 +75,81 @@ public struct ContentView: View {
             }
         }
     }
+}
+
+private struct MainWindowToolbar: View {
+    @Bindable var viewModel: AppViewModel
+
+    var body: some View {
+        ZStack {
+            Color.clear
+                .contentShape(Rectangle())
+                .gesture(WindowDragGesture())
+                .allowsWindowActivationEvents(true)
+
+            HStack(spacing: 8) {
+                Spacer(minLength: 96)
+
+                if viewModel.isProcessing || viewModel.isFinalizingRecording {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                if viewModel.isProcessing {
+                    Button("Cancel") {
+                        viewModel.cancelGeneration()
+                    }
+                }
+
+                if viewModel.shouldShowCaptureDisplayPicker {
+                    Picker("Monitor", selection: Binding(
+                        get: { viewModel.config.videoDeviceIndex },
+                        set: { viewModel.selectCaptureDisplay(id: $0) }
+                    )) {
+                        ForEach(viewModel.availableCaptureDisplays) { display in
+                            Text(display.menuTitle).tag(display.id)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 190)
+                    .help("Screen to record")
+                }
+
+                Picker("Agent", selection: $viewModel.config.activeAgentID) {
+                    ForEach(viewModel.config.agents) { agent in
+                        Text(agent.name).tag(agent.id)
+                    }
+                }
+                .frame(width: 190)
+                .help("Agent for AI report generation")
+
+                Button {
+                    toggleRecording()
+                } label: {
+                    ToolbarButtonLabel(title: recordingButtonTitle, systemImage: recordingButtonIcon)
+                }
+                .tint(viewModel.isRecording ? .secondary : .red)
+                .disabled(viewModel.isFinalizingRecording || (viewModel.isProcessing && !viewModel.isRecording))
+
+                Button {
+                    viewModel.generateSelectedReport()
+                } label: {
+                    ToolbarButtonLabel(title: "Generate", systemImage: "bolt.fill")
+                }
+                .disabled(!viewModel.canGenerate)
+
+                Button {
+                    viewModel.showSettings = true
+                } label: {
+                    Label("Settings", systemImage: "gearshape")
+                }
+            }
+            .controlSize(.small)
+            .padding(.leading, 88)
+            .padding(.trailing, 12)
+        }
+        .frame(height: 44)
+        .background(.bar)
+    }
 
     private var recordingButtonTitle: String {
         if viewModel.isFinalizingRecording {
@@ -150,79 +164,12 @@ public struct ContentView: View {
         }
         return viewModel.isRecording ? "stop.circle.fill" : "record.circle"
     }
-}
 
-private struct WindowTitlebarConfigurationView: NSViewRepresentable {
-    func makeNSView(context: Context) -> TitlebarConfigurationNSView {
-        TitlebarConfigurationNSView()
-    }
-
-    func updateNSView(_ nsView: TitlebarConfigurationNSView, context: Context) {
-        nsView.scheduleWindowConfiguration()
-    }
-}
-
-private final class TitlebarConfigurationNSView: NSView {
-    private var configurationTask: Task<Void, Never>?
-
-    deinit {
-        configurationTask?.cancel()
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        scheduleWindowConfiguration()
-    }
-
-    func scheduleWindowConfiguration() {
-        configurationTask?.cancel()
-        configurationTask = Task { @MainActor [weak self] in
-            self?.configureWindow()
-
-            for delay in [50, 150, 350] {
-                try? await Task.sleep(for: .milliseconds(delay))
-                guard !Task.isCancelled else {
-                    return
-                }
-                self?.configureWindow()
-            }
-        }
-    }
-
-    private func configureWindow() {
-        guard let window else {
-            return
-        }
-        window.title = "Steno"
-        window.titleVisibility = .visible
-        window.titlebarAppearsTransparent = true
-        window.styleMask.insert(.fullSizeContentView)
-        window.representedURL = nil
-
-        if let toolbar = window.toolbar {
-            configureToolbar(toolbar)
-        }
-    }
-
-    private func configureToolbar(_ toolbar: NSToolbar) {
-        let indexesToRemove = toolbar.items.enumerated().compactMap { index, item -> Int? in
-            let identifier = item.itemIdentifier
-            let rawIdentifier = identifier.rawValue.lowercased()
-            if rawIdentifier.contains("sidebar") {
-                return index
-            }
-            if identifier == .flexibleSpace, index != 0 {
-                return index
-            }
-            return nil
-        }
-
-        for index in indexesToRemove.reversed() {
-            toolbar.removeItem(at: index)
-        }
-
-        if toolbar.items.first?.itemIdentifier != .flexibleSpace {
-            toolbar.insertItem(withItemIdentifier: .flexibleSpace, at: 0)
+    private func toggleRecording() {
+        if viewModel.isRecording {
+            Task { await viewModel.stopRecording() }
+        } else {
+            Task { await viewModel.startRecording() }
         }
     }
 }

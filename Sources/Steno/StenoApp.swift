@@ -8,7 +8,7 @@ struct StenoApp: App {
     @State private var viewModel = AppViewModel()
 
     var body: some Scene {
-        Window("", id: "main") {
+        Window("Steno", id: "main") {
             ContentView(viewModel: viewModel)
                 .background {
                     StatusBarBridgeView(
