@@ -438,8 +438,6 @@ private struct DetailView: View {
     var body: some View {
         if let session = viewModel.selectedSession {
             VStack(spacing: 0) {
-                header(session)
-                Divider()
                 Picker("Content", selection: $viewModel.selectedTabID) {
                     ForEach(session.sortedReportAgentIDs, id: \.self) { agentID in
                         Text(agentName(agentID)).tag("report:\(agentID)")
@@ -471,26 +469,6 @@ private struct DetailView: View {
         } else {
             ContentUnavailableView("Select a Recording", systemImage: "sidebar.left", description: Text("Choose a recording in the sidebar."))
         }
-    }
-
-    @ViewBuilder
-    private func header(_ session: MeetingSession) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(session.displayName)
-                    .font(.headline)
-                Text(session.videoURL.path)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-
-            Spacer()
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(.regularMaterial)
     }
 
     private func agentName(_ agentID: String) -> String {
@@ -525,6 +503,8 @@ private struct TranscriptPane: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
+                let transcriptDocument = viewModel.transcriptDocument(for: session)
+
                 if viewModel.isTranscribing, viewModel.liveTranscriptDocument?.baseName == session.baseName {
                     Label("Transcribing", systemImage: "waveform")
                         .foregroundStyle(.secondary)
@@ -535,6 +515,11 @@ private struct TranscriptPane: View {
                         .lineLimit(1)
                 }
                 Spacer()
+                if let transcriptDocument, !transcriptDocument.sortedSegments.isEmpty {
+                    TextField("Search transcript", text: $searchText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 220)
+                }
                 Button {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(viewModel.loadTranscriptMarkdown(for: session), forType: .string)
@@ -558,7 +543,6 @@ private struct TranscriptPane: View {
                     .padding(.horizontal, 36)
                     .padding(.vertical, 24)
                 }
-                .searchable(text: $searchText, prompt: "Search transcript")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ContentUnavailableView(
@@ -954,3 +938,64 @@ private extension Collection {
         indices.contains(index) ? self[index] : nil
     }
 }
+
+#if DEBUG
+#Preview("Main Window") {
+    ContentView(viewModel: .previewMainWindow)
+        .frame(width: 1100, height: 720)
+}
+
+@MainActor
+private extension AppViewModel {
+    static var previewMainWindow: AppViewModel {
+        let viewModel = AppViewModel()
+        var config = AppConfig.default
+        config.videoDeviceIndex = "display-main"
+        config.activeAgentID = "default"
+        config.agents = [
+            Agent(id: "default", name: "Default", prompt: "Create a concise meeting protocol."),
+            Agent(id: "sales", name: "Sales Follow-up", prompt: "Extract objections, next steps, and owners.")
+        ]
+        config.usedTokens = 128_400
+        config.lastRequestTokens = 9_240
+
+        let baseURL = URL(filePath: "/tmp/steno-preview/Meet_28.04.2026_14:30:00")
+        let session = MeetingSession(
+            baseName: "Meet_28.04.2026_14:30:00",
+            baseURL: baseURL,
+            videoURL: baseURL.appendingPathExtension("mp4"),
+            metadataURL: baseURL.appendingPathExtension("json"),
+            transcriptURL: baseURL.appendingPathExtension("srt"),
+            transcriptMarkdownURL: baseURL.appendingPathExtension("md"),
+            audioURLs: [],
+            reportURLsByAgentID: [:],
+            metadata: SessionMetadata(
+                name: "Design Review",
+                createdAt: "2026-04-28T14:30:00Z",
+                recording: RecordingInfo(
+                    durationSeconds: 2_948,
+                    videoQuality: "1920x1080 30 fps",
+                    videoPath: baseURL.appendingPathExtension("mp4").path,
+                    microphoneAudioPath: baseURL.appendingPathExtension("m4a").path,
+                    videoSizeMB: 412.8,
+                    microphoneSizeMB: 18.6
+                )
+            ),
+            modifiedAt: Date(timeIntervalSinceReferenceDate: 798_472_800)
+        )
+
+        viewModel.config = config
+        viewModel.sessions = [session]
+        viewModel.selectedSessionID = session.id
+        viewModel.selectedTabID = "info"
+        viewModel.showOnboarding = false
+        viewModel.permissionState = PermissionState(hasScreenCapture: true, hasMicrophone: true)
+        viewModel.availableCaptureDisplays = [
+            CaptureDisplay(displayID: "display-main", name: "Built-in Display", width: 3024, height: 1964, isMain: true),
+            CaptureDisplay(displayID: "display-studio", name: "Studio Display", width: 5120, height: 2880, isMain: false)
+        ]
+        viewModel.statusMessage = "Preview"
+        return viewModel
+    }
+}
+#endif

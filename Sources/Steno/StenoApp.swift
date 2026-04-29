@@ -8,7 +8,7 @@ struct StenoApp: App {
     @State private var viewModel = AppViewModel()
 
     var body: some Scene {
-        WindowGroup("Steno", id: "main") {
+        Window("", id: "main") {
             ContentView(viewModel: viewModel)
                 .background {
                     StatusBarBridgeView(
@@ -21,6 +21,7 @@ struct StenoApp: App {
                     NSApp.activate(ignoringOtherApps: true)
                 }
         }
+        .windowStyle(.hiddenTitleBar)
         .windowToolbarStyle(.unifiedCompact)
         .commands {
             CommandGroup(replacing: .appSettings) {
@@ -137,6 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         AppLog.info("Last window closed; keeping app alive for menu bar", category: .app)
+        NSApp.setActivationPolicy(.accessory)
         return false
     }
 
