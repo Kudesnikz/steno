@@ -304,23 +304,14 @@ public final class AppViewModel {
         AppLog.info("Onboarding completed", category: .ui)
     }
 
-    public func prepareForApplicationExit() {
-        showOnboarding = false
-        showSettings = false
-    }
-
     public func quitApplication() {
         AppLog.info("Application quit requested", category: .ui)
-        ApplicationLifecycleService.quit { [weak self] in
-            self?.prepareForApplicationExit()
-        }
+        ApplicationLifecycleService.quit()
     }
 
     public func restartApplication() {
         AppLog.info("Application restart requested", category: .ui)
-        ApplicationLifecycleService.restart { [weak self] in
-            self?.prepareForApplicationExit()
-        }
+        ApplicationLifecycleService.restart()
     }
 
     public func selectAIProvider(_ providerID: String) {

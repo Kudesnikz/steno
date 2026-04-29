@@ -5,39 +5,43 @@ import Foundation
 /// express directly.
 @MainActor
 public enum ApplicationLifecycleService {
-    /// Dismisses transient SwiftUI presentation state, then asks AppKit to quit.
-    public static func quit(prepareForTermination: (() -> Void)? = nil) {
-        prepareForTermination?()
-        Task { @MainActor in
-            await Task.yield()
-            NSApp.terminate(nil)
-        }
+    /// Asks AppKit to quit immediately without changing SwiftUI sheet state.
+    public static func quit() {
+        NSApp.terminate(nil)
     }
 
-    /// Launches a fresh copy of the current `.app` bundle, then quits this
-    /// process so macOS privacy changes are picked up by the new instance.
-    public static func restart(prepareForTermination: (() -> Void)? = nil) {
-        prepareForTermination?()
+    /// Schedules a fresh copy of the current `.app` bundle after this process
+    /// exits, then asks AppKit to quit immediately.
+    public static func restart() {
         do {
-            try launchFreshApplicationInstance()
-            Task { @MainActor in
-                await Task.yield()
-                NSApp.terminate(nil)
-            }
+            try scheduleRelaunchAfterCurrentProcessExits()
+            NSApp.terminate(nil)
         } catch {
             AppLog.error("Application restart failed: \(error.localizedDescription)", category: .app)
-            quit(prepareForTermination: nil)
+            quit()
         }
     }
 
-    private static func launchFreshApplicationInstance() throws {
+    private static func scheduleRelaunchAfterCurrentProcessExits() throws {
         guard let bundleURL = currentApplicationBundleURL() else {
             throw LifecycleError.missingApplicationBundle
         }
 
+        let processID = ProcessInfo.processInfo.processIdentifier
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        process.arguments = ["-n", bundleURL.path]
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [
+            "-c",
+            """
+            while /bin/kill -0 "$1" 2>/dev/null; do
+                /bin/sleep 0.1
+            done
+            /usr/bin/open -n "$2"
+            """,
+            "steno-relaunch",
+            String(processID),
+            bundleURL.path
+        ]
         try process.run()
     }
 

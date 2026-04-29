@@ -87,9 +87,6 @@ private struct StatusBarBridgeView: View {
     }
 
     private func configureStatusBar() {
-        appDelegate.prepareForTermination = {
-            viewModel.prepareForApplicationExit()
-        }
         let controller = appDelegate.makeStatusBarController()
         controller.configure(
             viewModel: viewModel,
@@ -126,8 +123,6 @@ private struct StatusBarBridgeView: View {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) var statusBarController: StatusBarController?
-    var prepareForTermination: (() -> Void)?
-    private var isTerminating = false
 
     func makeStatusBarController() -> StatusBarController {
         if let statusBarController {
@@ -153,15 +148,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         AppLog.info("Application should terminate", category: .app)
-        guard !isTerminating else {
-            return .terminateNow
-        }
-        isTerminating = true
-        prepareForTermination?()
-        Task { @MainActor in
-            await Task.yield()
-            sender.reply(toApplicationShouldTerminate: true)
-        }
-        return .terminateLater
+        return .terminateNow
     }
 }
