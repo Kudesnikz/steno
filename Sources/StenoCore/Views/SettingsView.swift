@@ -35,10 +35,12 @@ public struct SettingsView: View {
                     .help("Open Steno on GitHub")
                 Spacer()
                 Button("Cancel") {
+                    viewModel.showSettings = false
                     dismiss()
                 }
                 Button("Save") {
                     viewModel.saveConfig()
+                    viewModel.showSettings = false
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)

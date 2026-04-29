@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import StenoCore
 import SwiftUI
 
@@ -123,6 +124,7 @@ private struct StatusBarBridgeView: View {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) var statusBarController: StatusBarController?
+    private var terminationFallbackTask: Task<Void, Never>?
 
     func makeStatusBarController() -> StatusBarController {
         if let statusBarController {
@@ -148,6 +150,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         AppLog.info("Application should terminate", category: .app)
+        terminationFallbackTask?.cancel()
+        terminationFallbackTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(750))
+            AppLog.warning("Forcing process exit after delayed AppKit termination", category: .app)
+            exit(EXIT_SUCCESS)
+        }
         return .terminateNow
     }
 }

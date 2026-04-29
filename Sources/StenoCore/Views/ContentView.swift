@@ -15,43 +15,10 @@ public struct ContentView: View {
     public var body: some View {
         GeometryReader { geometry in
             ZStack {
-                VStack(spacing: 0) {
-                    MainWindowToolbar(
-                        viewModel: viewModel,
-                        topInset: geometry.safeAreaInsets.top
-                    )
-
-                    Divider()
-
-                    HSplitView {
-                        SidebarView(
-                            viewModel: viewModel,
-                            showDeleteConfirmation: $showDeleteConfirmation
-                        )
-                            .frame(minWidth: 220, idealWidth: 280, maxWidth: 320, maxHeight: .infinity)
-
-                        DetailView(viewModel: viewModel)
-                            .frame(minWidth: 640, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    }
-                    .frame(maxHeight: .infinity)
-                }
-                .ignoresSafeArea(.container, edges: .top)
-
-                if viewModel.shouldShowFinishingTranscriptionProgress {
-                    FinalizingTranscriptionOverlay(progress: viewModel.transcriptionProgress)
-                        .transition(.opacity)
-                }
+                currentContent(topInset: geometry.safeAreaInsets.top)
             }
         }
         .frame(minWidth: 920, minHeight: 620)
-        .sheet(isPresented: $viewModel.showSettings) {
-            SettingsView(viewModel: viewModel)
-                .frame(minWidth: 760, idealWidth: 820, minHeight: 620, idealHeight: 680)
-        }
-        .sheet(isPresented: $viewModel.showOnboarding) {
-            OnboardingView(viewModel: viewModel)
-                .frame(width: 580, height: 560)
-        }
         .alert("Error", isPresented: Binding(
             get: { viewModel.errorMessage != nil },
             set: { if !$0 { viewModel.errorMessage = nil } }
@@ -89,6 +56,52 @@ public struct ContentView: View {
                 await viewModel.refreshCaptureDisplays()
             }
         }
+    }
+
+    @ViewBuilder
+    private func currentContent(topInset: CGFloat) -> some View {
+        if viewModel.showSettings {
+            SettingsView(viewModel: viewModel)
+                .frame(minWidth: 760, idealWidth: 820, minHeight: 620, idealHeight: 680)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if viewModel.showOnboarding {
+            OnboardingView(viewModel: viewModel)
+                .frame(width: 580, height: 560)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ZStack {
+                mainApplicationContent(topInset: topInset)
+
+                if viewModel.shouldShowFinishingTranscriptionProgress {
+                    FinalizingTranscriptionOverlay(progress: viewModel.transcriptionProgress)
+                        .transition(.opacity)
+                }
+            }
+        }
+    }
+
+    private func mainApplicationContent(topInset: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            MainWindowToolbar(
+                viewModel: viewModel,
+                topInset: topInset
+            )
+
+            Divider()
+
+            HSplitView {
+                SidebarView(
+                    viewModel: viewModel,
+                    showDeleteConfirmation: $showDeleteConfirmation
+                )
+                    .frame(minWidth: 220, idealWidth: 280, maxWidth: 320, maxHeight: .infinity)
+
+                DetailView(viewModel: viewModel)
+                    .frame(minWidth: 640, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            }
+            .frame(maxHeight: .infinity)
+        }
+        .ignoresSafeArea(.container, edges: .top)
     }
 }
 
