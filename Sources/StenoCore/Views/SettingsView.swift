@@ -6,6 +6,7 @@ public struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selectedAgentID: String?
     @State private var selectedWhisperModelIDs = Set<String>()
+    @State private var isConnectionStatusPopoverPresented = false
 
     public init(viewModel: AppViewModel) {
         self.viewModel = viewModel
@@ -87,6 +88,7 @@ public struct SettingsView: View {
                     .disabled(viewModel.isRefreshingAIModels)
 
                     Button {
+                        isConnectionStatusPopoverPresented = false
                         viewModel.checkAIConnection()
                     } label: {
                         Text("Проверить подключение")
@@ -94,6 +96,11 @@ public struct SettingsView: View {
                     .disabled(viewModel.isCheckingAIConnection)
 
                     connectionCheckIndicator
+                }
+                .onChange(of: viewModel.aiConnectionCheckStatus) { _, newStatus in
+                    if let newStatus, newStatus.matches(config: viewModel.config) {
+                        isConnectionStatusPopoverPresented = true
+                    }
                 }
             }
 
@@ -155,12 +162,87 @@ public struct SettingsView: View {
                 .frame(width: 18, height: 18)
                 .help("Checking \(viewModel.config.aiProvider.displayName) connection...")
         } else if let status = viewModel.aiConnectionCheckStatus, status.matches(config: viewModel.config) {
-            Image(systemName: status.isSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
-                .foregroundStyle(status.isSuccess ? .green : .red)
-                .font(.system(size: 14, weight: .semibold))
-                .frame(width: 18, height: 18)
-                .help(status.tooltip)
-                .accessibilityLabel(status.isSuccess ? "AI connection OK" : "AI connection failed")
+            Button {
+                isConnectionStatusPopoverPresented = true
+            } label: {
+                Image(systemName: status.isSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    .foregroundStyle(status.isSuccess ? .green : .red)
+                    .font(.system(size: 14, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+            .onHover { isHovering in
+                if isHovering {
+                    isConnectionStatusPopoverPresented = true
+                }
+            }
+            .popover(
+                isPresented: $isConnectionStatusPopoverPresented,
+                attachmentAnchor: .rect(.bounds),
+                arrowEdge: .leading
+            ) {
+                ConnectionCheckPopover(status: status)
+            }
+            .frame(width: 18, height: 18)
+            .accessibilityLabel(status.isSuccess ? "AI connection OK" : "AI connection failed")
+        }
+    }
+
+    private struct ConnectionCheckPopover: View {
+        var status: AIConnectionCheckStatus
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 10) {
+                Label(status.isSuccess ? "Connection OK" : "Connection failed", systemImage: status.isSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    .foregroundStyle(status.isSuccess ? .green : .red)
+                    .font(.headline)
+
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
+                    popoverRow("Provider", status.providerName)
+                    popoverRow("Model", status.modelName)
+                    popoverRow("Base URL", status.baseURL)
+                    popoverRow("Duration", String(format: "%.2fs", status.durationSeconds))
+                    popoverRow("Checked", status.checkedAt.formatted(date: .abbreviated, time: .standard))
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(status.isSuccess ? "Response" : "Error")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    ScrollView {
+                        Text(detailText)
+                            .font(.caption)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 120)
+                }
+            }
+            .padding(12)
+            .frame(width: 360, alignment: .leading)
+        }
+
+        private var detailText: String {
+            if status.isSuccess {
+                return status.responseText?.isEmpty == false ? status.responseText ?? "" : status.message
+            }
+            return status.message
+        }
+
+        private func popoverRow(_ label: String, _ value: String) -> some View {
+            GridRow {
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.caption)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
         }
     }
 
