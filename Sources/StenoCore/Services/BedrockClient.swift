@@ -11,7 +11,7 @@ public actor BedrockClient {
     }
 
     /// Sends a minimal signed Bedrock Converse request for the selected Nova model.
-    public func validateConfiguration(config: AppConfig, model: AIModelReference) async throws {
+    public func validateConfiguration(config: AppConfig, model: AIModelReference) async throws -> String {
         let body = BedrockConverseRequest(
             messages: [
                 BedrockMessage(
@@ -21,7 +21,7 @@ public actor BedrockClient {
             ],
             system: [BedrockTextBlock(text: "Health check")]
         )
-        _ = try await converse(
+        let response = try await converse(
             body: body,
             config: config,
             modelID: model.modelID,
@@ -31,6 +31,10 @@ public actor BedrockClient {
                 timeout: AIHTTPTimeouts.healthCheck
             )
         )
+        return response.output.message.content
+            .compactMap(\.text)
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Sends the meeting video through Bedrock Converse using a native `video` content block.

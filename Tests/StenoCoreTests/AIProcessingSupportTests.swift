@@ -25,6 +25,31 @@ final class AIProcessingSupportTests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("OpenRouter"))
         }
     }
+
+    func testConnectionCheckStatusMatchesConfigAndIncludesResponseInTooltip() {
+        var config = AppConfig.default
+        config.aiProvider = .gemini
+        config.modelName = "gemini-2.5-flash"
+        config.baseURL = "https://generativelanguage.googleapis.com"
+
+        let status = AIConnectionCheckStatus(
+            outcome: .success,
+            providerName: AIProviderID.gemini.displayName,
+            providerID: .gemini,
+            baseURL: config.baseURL,
+            modelName: config.modelName,
+            responseText: "ok",
+            message: "Gemini API connection OK: gemini-2.5-flash",
+            checkedAt: Date(timeIntervalSince1970: 0),
+            durationSeconds: 0.42
+        )
+
+        XCTAssertTrue(status.matches(config: config))
+        XCTAssertTrue(status.tooltip.contains("Response: ok"))
+
+        config.modelName = "gemini-2.5-pro"
+        XCTAssertFalse(status.matches(config: config))
+    }
 }
 
 private func supportTemporaryDirectory() throws -> URL {

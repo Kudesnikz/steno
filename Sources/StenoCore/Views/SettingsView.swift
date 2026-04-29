@@ -89,14 +89,11 @@ public struct SettingsView: View {
                     Button {
                         viewModel.checkAIConnection()
                     } label: {
-                        if viewModel.isCheckingAIConnection {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Text("Проверить подключение")
-                        }
+                        Text("Проверить подключение")
                     }
                     .disabled(viewModel.isCheckingAIConnection)
+
+                    connectionCheckIndicator
                 }
             }
 
@@ -148,6 +145,23 @@ public struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    @ViewBuilder
+    private var connectionCheckIndicator: some View {
+        if viewModel.isCheckingAIConnection {
+            ProgressView()
+                .controlSize(.small)
+                .frame(width: 18, height: 18)
+                .help("Checking \(viewModel.config.aiProvider.displayName) connection...")
+        } else if let status = viewModel.aiConnectionCheckStatus, status.matches(config: viewModel.config) {
+            Image(systemName: status.isSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
+                .foregroundStyle(status.isSuccess ? .green : .red)
+                .font(.system(size: 14, weight: .semibold))
+                .frame(width: 18, height: 18)
+                .help(status.tooltip)
+                .accessibilityLabel(status.isSuccess ? "AI connection OK" : "AI connection failed")
+        }
     }
 
     private var videoQualityDetails: some View {

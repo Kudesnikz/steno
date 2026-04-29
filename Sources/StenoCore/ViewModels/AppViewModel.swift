@@ -2,6 +2,76 @@ import AppKit
 import Foundation
 import Observation
 
+/// User-visible result of the latest AI health check shown in Settings.
+public struct AIConnectionCheckStatus: Equatable, Sendable {
+    public enum Outcome: Equatable, Sendable {
+        case success
+        case failure
+    }
+
+    public var outcome: Outcome
+    public var providerName: String
+    public var providerID: AIProviderID
+    public var baseURL: String
+    public var modelName: String
+    public var responseText: String?
+    public var message: String
+    public var checkedAt: Date
+    public var durationSeconds: Double
+
+    public init(
+        outcome: Outcome,
+        providerName: String,
+        providerID: AIProviderID,
+        baseURL: String,
+        modelName: String,
+        responseText: String?,
+        message: String,
+        checkedAt: Date,
+        durationSeconds: Double
+    ) {
+        self.outcome = outcome
+        self.providerName = providerName
+        self.providerID = providerID
+        self.baseURL = baseURL
+        self.modelName = modelName
+        self.responseText = responseText
+        self.message = message
+        self.checkedAt = checkedAt
+        self.durationSeconds = durationSeconds
+    }
+
+    public var isSuccess: Bool {
+        outcome == .success
+    }
+
+    /// Returns false when the user changes provider, model, or endpoint after the check.
+    public func matches(config: AppConfig) -> Bool {
+        providerID == config.aiProvider &&
+            modelName == config.modelName &&
+            baseURL == config.baseURL(for: config.aiProvider)
+    }
+
+    /// Multiline text shown by macOS as the hover help for the status icon.
+    public var tooltip: String {
+        var lines = [
+            isSuccess ? "Connection OK" : "Connection failed",
+            "Provider: \(providerName)",
+            "Model: \(modelName)",
+            "Base URL: \(baseURL)"
+        ]
+
+        if let responseText, !responseText.isEmpty {
+            lines.append("Response: \(responseText)")
+        }
+
+        lines.append("Details: \(message)")
+        lines.append("Checked: \(checkedAt.formatted(date: .abbreviated, time: .standard))")
+        lines.append(String(format: "Duration: %.2fs", durationSeconds))
+        return lines.joined(separator: "\n")
+    }
+}
+
 @MainActor
 @Observable
 public final class AppViewModel {
@@ -16,6 +86,7 @@ public final class AppViewModel {
     public var recordingDuration = 0
     public var statusMessage: String?
     public var errorMessage: String?
+    public var aiConnectionCheckStatus: AIConnectionCheckStatus?
     public var availableAIModels: [AIModelReference] = AIModelCatalog.fallbackModels
     public var availableCaptureDisplays: [CaptureDisplay] = []
     public var isRefreshingAIModels = false
@@ -562,8 +633,10 @@ public final class AppViewModel {
         }
 
         isCheckingAIConnection = true
+        aiConnectionCheckStatus = nil
         statusMessage = "Checking AI connection"
         let snapshotConfig = config
+        let startedAt = Date()
         AppLog.info("AI connection check requested model=\(snapshotConfig.modelName)", category: .ai)
         Task { [weak self] in
             guard let self else {
@@ -571,13 +644,38 @@ public final class AppViewModel {
             }
             do {
                 let result = try await self.aiClient.validateConfiguration(config: snapshotConfig)
-                self.statusMessage = "\(result.providerName) connection OK: \(result.modelName)"
+                let message = "\(result.providerName) connection OK: \(result.modelName)"
+                let finishedAt = Date()
+                self.statusMessage = message
                 self.errorMessage = nil
+                self.aiConnectionCheckStatus = AIConnectionCheckStatus(
+                    outcome: .success,
+                    providerName: result.providerName,
+                    providerID: snapshotConfig.aiProvider,
+                    baseURL: result.baseURL,
+                    modelName: result.modelName,
+                    responseText: result.responseText,
+                    message: message,
+                    checkedAt: finishedAt,
+                    durationSeconds: finishedAt.timeIntervalSince(startedAt)
+                )
                 AppLog.info("AI connection check completed baseURL=\(result.baseURL) model=\(result.modelName)", category: .ai)
             } catch {
                 let safeMessage = self.masked(error.localizedDescription, config: snapshotConfig)
+                let finishedAt = Date()
                 self.statusMessage = "AI connection failed"
                 self.errorMessage = "AI check failed: \(safeMessage)"
+                self.aiConnectionCheckStatus = AIConnectionCheckStatus(
+                    outcome: .failure,
+                    providerName: snapshotConfig.aiProvider.displayName,
+                    providerID: snapshotConfig.aiProvider,
+                    baseURL: snapshotConfig.baseURL(for: snapshotConfig.aiProvider),
+                    modelName: snapshotConfig.modelName,
+                    responseText: nil,
+                    message: safeMessage,
+                    checkedAt: finishedAt,
+                    durationSeconds: finishedAt.timeIntervalSince(startedAt)
+                )
                 AppLog.error("AI connection check failed: \(safeMessage)", category: .ai)
             }
             self.isCheckingAIConnection = false

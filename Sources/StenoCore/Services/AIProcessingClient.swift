@@ -4,11 +4,13 @@ public struct AIConnectionCheckResult: Hashable, Sendable {
     public var providerName: String
     public var baseURL: String
     public var modelName: String
+    public var responseText: String
 
-    public init(providerName: String, baseURL: String, modelName: String) {
+    public init(providerName: String, baseURL: String, modelName: String, responseText: String) {
         self.providerName = providerName
         self.baseURL = baseURL
         self.modelName = modelName
+        self.responseText = responseText
     }
 }
 
@@ -68,21 +70,24 @@ public actor AIProcessingClient {
             return AIConnectionCheckResult(
                 providerName: model.providerID.displayName,
                 baseURL: result.baseURL,
-                modelName: result.modelName
+                modelName: result.modelName,
+                responseText: result.responseText
             )
         case .kimi, .qwen, .openRouter:
-            try await openAICompatibleClient.validateConfiguration(config: config, model: model)
+            let responseText = try await openAICompatibleClient.validateConfiguration(config: config, model: model)
             return AIConnectionCheckResult(
                 providerName: model.providerID.displayName,
                 baseURL: config.baseURL(for: model.providerID),
-                modelName: model.modelID
+                modelName: model.modelID,
+                responseText: responseText
             )
         case .amazonBedrock:
-            try await bedrockClient.validateConfiguration(config: config, model: model)
+            let responseText = try await bedrockClient.validateConfiguration(config: config, model: model)
             return AIConnectionCheckResult(
                 providerName: model.providerID.displayName,
                 baseURL: config.baseURL(for: model.providerID),
-                modelName: model.modelID
+                modelName: model.modelID,
+                responseText: responseText
             )
         }
     }

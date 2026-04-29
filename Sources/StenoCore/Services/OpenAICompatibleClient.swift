@@ -10,7 +10,7 @@ public actor OpenAICompatibleClient {
     }
 
     /// Sends a minimal chat completion to an OpenAI-compatible provider.
-    public func validateConfiguration(config: AppConfig, model: AIModelReference) async throws {
+    public func validateConfiguration(config: AppConfig, model: AIModelReference) async throws -> String {
         let body = OpenAIChatRequest(
             model: model.modelID,
             messages: [
@@ -19,7 +19,7 @@ public actor OpenAICompatibleClient {
             ],
             temperature: 0
         )
-        _ = try await sendChatRequest(
+        let response = try await sendChatRequest(
             body: body,
             config: config,
             model: model,
@@ -29,6 +29,7 @@ public actor OpenAICompatibleClient {
                 timeout: AIHTTPTimeouts.healthCheck
             )
         )
+        return response.text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Sends the meeting video as a base64 `video_url` content part.

@@ -44,10 +44,12 @@ public struct AIProcessingResult: Hashable, Sendable {
 public struct GeminiConnectionCheckResult: Hashable, Sendable {
     public var baseURL: String
     public var modelName: String
+    public var responseText: String
 
-    public init(baseURL: String, modelName: String) {
+    public init(baseURL: String, modelName: String, responseText: String) {
         self.baseURL = baseURL
         self.modelName = modelName
+        self.responseText = responseText
     }
 }
 
@@ -111,7 +113,12 @@ public actor GeminiClient {
             timeout: AIHTTPTimeouts.healthCheck
         )
         try validate(response, data: data, context: "POST \(sanitizedEndpoint(url))")
-        return GeminiConnectionCheckResult(baseURL: normalizedBase, modelName: config.modelName)
+        let decoded = try decoder.decode(GenerateContentResponse.self, from: data)
+        return GeminiConnectionCheckResult(
+            baseURL: normalizedBase,
+            modelName: config.modelName,
+            responseText: decoded.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        )
     }
 
     public func generateReport(
