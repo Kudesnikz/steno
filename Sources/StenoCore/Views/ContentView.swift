@@ -46,7 +46,7 @@ public struct ContentView: View {
         .frame(minWidth: 920, minHeight: 620)
         .sheet(isPresented: $viewModel.showSettings) {
             SettingsView(viewModel: viewModel)
-                .frame(width: 740, height: 560)
+                .frame(minWidth: 760, idealWidth: 820, minHeight: 620, idealHeight: 680)
         }
         .sheet(isPresented: $viewModel.showOnboarding) {
             OnboardingView(viewModel: viewModel)

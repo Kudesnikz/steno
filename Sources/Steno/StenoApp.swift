@@ -65,7 +65,7 @@ struct StenoApp: App {
 
         Settings {
             SettingsView(viewModel: viewModel)
-                .frame(width: 740, height: 560)
+                .frame(minWidth: 760, idealWidth: 820, minHeight: 620, idealHeight: 680)
         }
     }
 }

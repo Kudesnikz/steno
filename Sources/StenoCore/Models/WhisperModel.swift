@@ -5,7 +5,7 @@ public enum WhisperDefaults {
     public static let defaultModelID = bundledModelID
     public static let defaultLanguageCode = "ru"
     public static let legacyBundledModelID = "ggml-tiny-q5_1"
-    public static let currentDefaultsRevision = 1
+    public static let currentDefaultsRevision = 2
 }
 
 public enum WhisperModelInstallState: String, Codable, Hashable, Sendable {

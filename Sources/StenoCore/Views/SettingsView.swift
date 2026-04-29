@@ -24,6 +24,7 @@ public struct SettingsView: View {
                     .tabItem { Text("Агенты") }
             }
             .padding()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Divider()
 
@@ -296,56 +297,83 @@ public struct SettingsView: View {
     }
 
     private var whisperModelsTab: some View {
-        VStack(spacing: 12) {
-            Form {
-                Section("Realtime Transcription") {
-                    Toggle("Локальная транскрибация Whisper", isOn: $viewModel.config.localTranscriptionEnabled)
-                    Toggle("Передавать транскрипт в AI", isOn: $viewModel.config.attachTranscriptToAI)
-                        .disabled(!viewModel.config.localTranscriptionEnabled)
+        ScrollView {
+            VStack(spacing: 12) {
+                Form {
+                    Section("Realtime Transcription") {
+                        Toggle("Локальная транскрибация Whisper", isOn: $viewModel.config.localTranscriptionEnabled)
+                        Toggle("Передавать транскрипт в AI", isOn: $viewModel.config.attachTranscriptToAI)
+                            .disabled(!viewModel.config.localTranscriptionEnabled)
 
-                    Picker("Активная модель", selection: $viewModel.config.localTranscriptionModel) {
-                        if viewModel.installedWhisperModels.isEmpty {
-                            Text(viewModel.config.localTranscriptionModel).tag(viewModel.config.localTranscriptionModel)
-                        } else {
-                            ForEach(viewModel.installedWhisperModels) { model in
-                                Text("\(model.displayName) · \(model.installState.displayName)").tag(model.id)
+                        Picker("Активная модель", selection: $viewModel.config.localTranscriptionModel) {
+                            if viewModel.installedWhisperModels.isEmpty {
+                                Text(viewModel.config.localTranscriptionModel).tag(viewModel.config.localTranscriptionModel)
+                            } else {
+                                ForEach(viewModel.installedWhisperModels) { model in
+                                    Text("\(model.displayName) · \(model.installState.displayName)").tag(model.id)
+                                }
                             }
                         }
-                    }
-                    .disabled(!viewModel.config.localTranscriptionEnabled)
+                        .disabled(!viewModel.config.localTranscriptionEnabled)
 
-                    Picker("Язык", selection: $viewModel.config.localTranscriptionLanguage) {
-                        Text("Русский").tag("ru")
-                        Text("Автоматически").tag("auto")
-                        Text("English").tag("en")
-                    }
-                    .disabled(!viewModel.config.localTranscriptionEnabled)
+                        Picker("Язык", selection: $viewModel.config.localTranscriptionLanguage) {
+                            Text("Русский").tag("ru")
+                            Text("Автоматически").tag("auto")
+                            Text("English").tag("en")
+                        }
+                        .disabled(!viewModel.config.localTranscriptionEnabled)
 
-                    Stepper(value: $viewModel.config.localTranscriptionThreadCount, in: 1...4) {
-                        Text("Потоки CPU: \(viewModel.config.localTranscriptionThreadCount)")
-                    }
-                    .disabled(!viewModel.config.localTranscriptionEnabled)
+                        Stepper(value: $viewModel.config.localTranscriptionThreadCount, in: 1...4) {
+                            Text("Потоки CPU: \(viewModel.config.localTranscriptionThreadCount)")
+                        }
+                        .disabled(!viewModel.config.localTranscriptionEnabled)
 
-                    if WhisperAccelerationPolicy.supportsGPUAcceleration {
-                        Toggle("Использовать GPU (Metal)", isOn: $viewModel.config.localTranscriptionUseGPU)
-                            .disabled(!viewModel.config.localTranscriptionEnabled)
-                        Text("Metal включается только для нативного Apple Silicon-среза и применяется к следующей записи или тесту модели.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    } else {
-                        Toggle("Использовать GPU (Metal)", isOn: .constant(false))
-                            .disabled(true)
-                        Text("GPU-ускорение отключено для Intel и Rosetta. Whisper будет использовать CPU.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        whisperGPUSetting
                     }
                 }
-            }
-            .formStyle(.grouped)
-            .frame(height: 245)
+                .formStyle(.grouped)
+                .frame(height: 245)
 
+                whisperModelActions
+
+                List(selection: $selectedWhisperModelIDs) {
+                    ForEach(viewModel.availableWhisperModels) { model in
+                        WhisperModelRow(model: model, isActive: model.id == viewModel.config.localTranscriptionModel)
+                            .tag(model.id)
+                    }
+                }
+                .frame(height: 180)
+
+                whisperTestResultBox
+            }
+            .padding(.vertical, 4)
+        }
+        .task {
+            await viewModel.refreshWhisperModels()
+        }
+    }
+
+    @ViewBuilder
+    private var whisperGPUSetting: some View {
+        if WhisperAccelerationPolicy.supportsGPUAcceleration {
+            Toggle("Использовать GPU (Metal)", isOn: $viewModel.config.localTranscriptionUseGPU)
+                .disabled(!viewModel.config.localTranscriptionEnabled)
+            Text("Metal включается по умолчанию на Apple Silicon и применяется к следующей записи или тесту модели.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            Toggle("Использовать GPU (Metal)", isOn: .constant(false))
+                .disabled(true)
+            Text("GPU-ускорение отключено для Intel и Rosetta. Whisper будет использовать CPU.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var whisperModelActions: some View {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Button {
                     Task { await viewModel.refreshWhisperModels() }
@@ -385,9 +413,11 @@ public struct SettingsView: View {
                     Label("Использовать", systemImage: "checkmark.circle")
                 }
                 .disabled(selectedSingleInstalledModelID == nil)
-
                 Spacer()
+            }
 
+            HStack {
+                Spacer()
                 Button {
                     Task { await viewModel.runWhisperVoiceTest(modelID: selectedSingleInstalledModelID) }
                 } label: {
@@ -399,46 +429,37 @@ public struct SettingsView: View {
                 }
                 .disabled(viewModel.isTestingWhisperModel || viewModel.whisperDownloadState.isDownloading || testModelID == nil)
             }
-
-            List(selection: $selectedWhisperModelIDs) {
-                ForEach(viewModel.availableWhisperModels) { model in
-                    WhisperModelRow(model: model, isActive: model.id == viewModel.config.localTranscriptionModel)
-                        .tag(model.id)
-                }
-            }
-            .frame(minHeight: 180)
-
-            GroupBox("Результат теста") {
-                if viewModel.isTestingWhisperModel {
-                    HStack {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Говорите в микрофон. Запись идет 5 секунд.")
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                    }
-                    .padding(.vertical, 4)
-                } else if let error = viewModel.whisperTestErrorMessage {
-                    Text(error)
-                        .foregroundStyle(.red)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                } else if let result = viewModel.whisperTestResult {
-                    ScrollView {
-                        Text(result)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.vertical, 4)
-                    }
-                    .frame(maxHeight: 90)
-                } else {
-                    Text("Выберите установленную модель или используйте активную, затем запустите тест.")
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
         }
-        .task {
-            await viewModel.refreshWhisperModels()
+    }
+
+    private var whisperTestResultBox: some View {
+        GroupBox("Результат теста") {
+            if viewModel.isTestingWhisperModel {
+                HStack {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Говорите в микрофон. Запись идет 5 секунд.")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(.vertical, 4)
+            } else if let error = viewModel.whisperTestErrorMessage {
+                Text(error)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let result = viewModel.whisperTestResult {
+                ScrollView {
+                    Text(result)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 4)
+                }
+                .frame(maxHeight: 90)
+            } else {
+                Text("Выберите установленную модель или используйте активную, затем запустите тест.")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
     }
 

@@ -915,7 +915,8 @@ public final class AppViewModel {
     }
 
     private static func migrateWhisperDefaultsIfNeeded(_ config: inout AppConfig) -> Bool {
-        guard config.localTranscriptionDefaultsRevision < WhisperDefaults.currentDefaultsRevision else {
+        let previousRevision = config.localTranscriptionDefaultsRevision
+        guard previousRevision < WhisperDefaults.currentDefaultsRevision else {
             return false
         }
 
@@ -929,6 +930,10 @@ public final class AppViewModel {
         let language = config.localTranscriptionLanguage.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if language.isEmpty || language == "auto" {
             config.localTranscriptionLanguage = WhisperDefaults.defaultLanguageCode
+        }
+
+        if previousRevision < 2 {
+            config.localTranscriptionUseGPU = WhisperAccelerationPolicy.supportsGPUAcceleration
         }
 
         config.localTranscriptionDefaultsRevision = WhisperDefaults.currentDefaultsRevision

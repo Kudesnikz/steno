@@ -1,3 +1,4 @@
+import Foundation
 @testable import StenoCore
 import XCTest
 
@@ -20,5 +21,15 @@ final class WhisperAccelerationPolicyTests: XCTestCase {
         #else
         XCTAssertFalse(WhisperAccelerationPolicy.effectiveUseGPU(requested: true))
         #endif
+    }
+
+    func testDefaultConfigEnablesGPUOnlyWhenSupported() {
+        XCTAssertEqual(AppConfig.default.localTranscriptionUseGPU, WhisperAccelerationPolicy.supportsGPUAcceleration)
+    }
+
+    func testDecodedConfigWithoutGPUFieldUsesHardwareDefault() throws {
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+
+        XCTAssertEqual(config.localTranscriptionUseGPU, WhisperAccelerationPolicy.supportsGPUAcceleration)
     }
 }
