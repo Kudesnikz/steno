@@ -13,21 +13,28 @@ public struct ContentView: View {
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            MainWindowToolbar(viewModel: viewModel)
-
-            Divider()
-
-            HSplitView {
-                SidebarView(
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                MainWindowToolbar(
                     viewModel: viewModel,
-                    showDeleteConfirmation: $showDeleteConfirmation
+                    topInset: geometry.safeAreaInsets.top
                 )
-                    .frame(minWidth: 220, idealWidth: 280, maxWidth: 320, maxHeight: .infinity)
 
-                DetailView(viewModel: viewModel)
-                    .frame(minWidth: 640, maxWidth: .infinity, maxHeight: .infinity)
+                Divider()
+
+                HSplitView {
+                    SidebarView(
+                        viewModel: viewModel,
+                        showDeleteConfirmation: $showDeleteConfirmation
+                    )
+                        .frame(minWidth: 220, idealWidth: 280, maxWidth: 320, maxHeight: .infinity)
+
+                    DetailView(viewModel: viewModel)
+                        .frame(minWidth: 640, maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .frame(maxHeight: .infinity)
             }
+            .ignoresSafeArea(.container, edges: .top)
         }
         .frame(minWidth: 920, minHeight: 620)
         .sheet(isPresented: $viewModel.showSettings) {
@@ -79,6 +86,7 @@ public struct ContentView: View {
 
 private struct MainWindowToolbar: View {
     @Bindable var viewModel: AppViewModel
+    var topInset: CGFloat
 
     var body: some View {
         ZStack {
@@ -147,7 +155,7 @@ private struct MainWindowToolbar: View {
             .padding(.leading, 88)
             .padding(.trailing, 12)
         }
-        .frame(height: 44)
+        .frame(height: max(40, topInset))
         .background(.bar)
     }
 
