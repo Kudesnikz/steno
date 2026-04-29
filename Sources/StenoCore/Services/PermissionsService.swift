@@ -11,6 +11,10 @@ public struct PermissionState: Hashable, Sendable {
         self.hasScreenCapture = hasScreenCapture
         self.hasMicrophone = hasMicrophone
     }
+
+    public var isFullyGranted: Bool {
+        hasScreenCapture && hasMicrophone
+    }
 }
 
 public struct PermissionsService: Sendable {

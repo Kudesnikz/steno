@@ -36,6 +36,7 @@ public final class StatusBarController: NSObject {
     private weak var viewModel: AppViewModel?
     private var showMainWindow: (() -> Void)?
     private var showSettings: (() -> Void)?
+    private var quitApplication: (() -> Void)?
     private var snapshot = StatusBarSnapshot(
         isRecording: false,
         isFinalizingRecording: false,
@@ -58,11 +59,13 @@ public final class StatusBarController: NSObject {
     public func configure(
         viewModel: AppViewModel,
         showMainWindow: @escaping () -> Void,
-        showSettings: @escaping () -> Void
+        showSettings: @escaping () -> Void,
+        quitApplication: @escaping () -> Void
     ) {
         self.viewModel = viewModel
         self.showMainWindow = showMainWindow
         self.showSettings = showSettings
+        self.quitApplication = quitApplication
         rebuildMenu()
     }
 
@@ -180,7 +183,11 @@ public final class StatusBarController: NSObject {
     }
 
     @objc private func quit() {
-        NSApp.terminate(nil)
+        if let quitApplication {
+            quitApplication()
+        } else {
+            ApplicationLifecycleService.quit()
+        }
     }
 }
 

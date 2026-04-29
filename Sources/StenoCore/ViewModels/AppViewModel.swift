@@ -142,7 +142,7 @@ public final class AppViewModel {
         self.whisperVoiceTestService = whisperVoiceTestService
 
         var loadedConfig = AppConfig.default
-        var shouldShowOnboarding = true
+        var didFindExistingConfig = false
         var initialStatus: String?
         var initialError: String?
 
@@ -150,7 +150,7 @@ public final class AppViewModel {
             let loadResult = try configStore.load()
             loadedConfig = loadResult.config
             let didMigrateWhisperDefaults = Self.migrateWhisperDefaultsIfNeeded(&loadedConfig)
-            shouldShowOnboarding = !loadResult.didFindExistingConfig || loadedConfig.apiKey(for: loadedConfig.aiProvider).isEmpty
+            didFindExistingConfig = loadResult.didFindExistingConfig
             if loadResult.didMigrateLegacyConfig {
                 initialStatus = "Legacy config migrated to ~/.steno/config.json"
             }
@@ -159,16 +159,21 @@ public final class AppViewModel {
             }
         } catch {
             loadedConfig = .default
-            shouldShowOnboarding = true
+            didFindExistingConfig = false
             initialError = "Config load failed: \(error.localizedDescription)"
         }
 
+        let initialPermissionState = permissionsService.currentState()
         config = loadedConfig
-        showOnboarding = shouldShowOnboarding
+        showOnboarding = Self.requiresSetup(
+            config: loadedConfig,
+            didFindExistingConfig: didFindExistingConfig,
+            permissionState: initialPermissionState
+        )
         statusMessage = initialStatus
         errorMessage = initialError
         sessionStore = SessionStore(saveDirectory: URL(fileURLWithPath: loadedConfig.saveDirectory))
-        permissionState = permissionsService.currentState()
+        permissionState = initialPermissionState
         refreshSessions()
         Task {
             await refreshCaptureDisplays()
@@ -210,8 +215,21 @@ public final class AppViewModel {
         return isRecording ? "Stop Recording" : "Start Recording"
     }
 
+    public static func requiresSetup(
+        config: AppConfig,
+        didFindExistingConfig: Bool,
+        permissionState: PermissionState
+    ) -> Bool {
+        !didFindExistingConfig ||
+        !permissionState.isFullyGranted ||
+        config.apiKey(for: config.aiProvider).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     public func refreshPermissions() {
         permissionState = permissionsService.currentState()
+        if !permissionState.isFullyGranted {
+            showOnboarding = true
+        }
         AppLog.info("Refreshed permissions screen=\(permissionState.hasScreenCapture) microphone=\(permissionState.hasMicrophone)", category: .permissions)
     }
 
@@ -275,6 +293,25 @@ public final class AppViewModel {
         saveConfig()
         showOnboarding = false
         AppLog.info("Onboarding completed", category: .ui)
+    }
+
+    public func prepareForApplicationExit() {
+        showOnboarding = false
+        showSettings = false
+    }
+
+    public func quitApplication() {
+        AppLog.info("Application quit requested", category: .ui)
+        ApplicationLifecycleService.quit { [weak self] in
+            self?.prepareForApplicationExit()
+        }
+    }
+
+    public func restartApplication() {
+        AppLog.info("Application restart requested", category: .ui)
+        ApplicationLifecycleService.restart { [weak self] in
+            self?.prepareForApplicationExit()
+        }
     }
 
     public func selectAIProvider(_ providerID: String) {
@@ -628,6 +665,20 @@ public final class AppViewModel {
     }
 
     public func checkAIConnection() {
+        checkAIConnection(config: config)
+    }
+
+    public func checkGeminiConnection(apiKey: String) {
+        var snapshotConfig = config
+        snapshotConfig.aiProvider = .gemini
+        snapshotConfig.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if AIModelCatalog.model(providerID: .gemini, modelID: snapshotConfig.modelName) == nil {
+            snapshotConfig.modelName = AIModelCatalog.defaultModelID(for: .gemini)
+        }
+        checkAIConnection(config: snapshotConfig)
+    }
+
+    private func checkAIConnection(config snapshotConfig: AppConfig) {
         guard !isCheckingAIConnection else {
             return
         }
@@ -636,7 +687,6 @@ public final class AppViewModel {
         aiConnectionCheckStatus = nil
         errorMessage = nil
         statusMessage = "Checking AI connection"
-        let snapshotConfig = config
         let startedAt = Date()
         AppLog.info("AI connection check requested model=\(snapshotConfig.modelName)", category: .ai)
         Task { [weak self] in

@@ -43,7 +43,7 @@ public struct ContentView: View {
         }
         .sheet(isPresented: $viewModel.showOnboarding) {
             OnboardingView(viewModel: viewModel)
-                .frame(width: 560, height: 500)
+                .frame(width: 580, height: 560)
         }
         .alert("Error", isPresented: Binding(
             get: { viewModel.errorMessage != nil },
@@ -72,6 +72,7 @@ public struct ContentView: View {
             guard phase == .active else {
                 return
             }
+            viewModel.refreshPermissions()
             Task {
                 await viewModel.refreshCaptureDisplays()
             }

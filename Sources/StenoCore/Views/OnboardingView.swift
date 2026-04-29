@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 public struct OnboardingView: View {
@@ -52,6 +51,30 @@ public struct OnboardingView: View {
                 }
                 SecureField("AIzaSy...", text: $apiKey)
                     .textFieldStyle(.roundedBorder)
+
+                HStack(spacing: 8) {
+                    Button {
+                        viewModel.checkGeminiConnection(apiKey: apiKey)
+                    } label: {
+                        if viewModel.isCheckingAIConnection {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Text("Проверить подключение")
+                        }
+                    }
+                    .disabled(viewModel.isCheckingAIConnection || trimmedAPIKey.isEmpty)
+
+                    if let status = geminiConnectionStatus {
+                        Label(
+                            status.isSuccess ? "Подключение работает" : "Ошибка подключения",
+                            systemImage: status.isSuccess ? "checkmark.circle.fill" : "xmark.circle.fill"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(status.isSuccess ? .green : .red)
+                        .help(status.tooltip)
+                    }
+                }
             }
             .padding()
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
@@ -61,11 +84,15 @@ public struct OnboardingView: View {
             HStack {
                 Button("Выйти") {
                     AppLog.info("Onboarding quit selected", category: .ui)
-                    NSApp.terminate(nil)
+                    viewModel.quitApplication()
                 }
                 .keyboardShortcut("q", modifiers: .command)
 
-                Button("Refresh Permissions") {
+                Button("Перезапустить") {
+                    viewModel.restartApplication()
+                }
+
+                Button("Обновить права") {
                     viewModel.refreshPermissions()
                 }
                 Spacer()
@@ -84,12 +111,26 @@ public struct OnboardingView: View {
             didRequestPermissions = true
             viewModel.requestInitialPermissions()
         }
+        .onChange(of: apiKey) { _, _ in
+            viewModel.aiConnectionCheckStatus = nil
+        }
+    }
+
+    private var trimmedAPIKey: String {
+        apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var geminiConnectionStatus: AIConnectionCheckStatus? {
+        guard let status = viewModel.aiConnectionCheckStatus, status.providerID == .gemini else {
+            return nil
+        }
+        return status
     }
 
     private var canContinue: Bool {
         viewModel.permissionState.hasScreenCapture &&
         viewModel.permissionState.hasMicrophone &&
-        apiKey.trimmingCharacters(in: .whitespacesAndNewlines).count > 5
+        trimmedAPIKey.count > 5
     }
 }
 
