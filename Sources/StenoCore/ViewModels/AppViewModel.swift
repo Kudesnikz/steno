@@ -93,6 +93,7 @@ public final class AppViewModel {
     public var isTranscribing = false
     public var liveTranscriptDocument: TranscriptDocument?
     public var transcriptionErrorMessage: String?
+    public var transcriptionProgress: TranscriptionProgress = .idle
     public var availableWhisperModels: [WhisperModelDescriptor] = WhisperModelCatalogService.fallbackModels
     public var isRefreshingWhisperModels = false
     public var whisperDownloadState = WhisperModelDownloadState()
@@ -213,6 +214,14 @@ public final class AppViewModel {
             return "Finalizing Recording..."
         }
         return isRecording ? "Stop Recording" : "Start Recording"
+    }
+
+    public var shouldShowTranscriptionLagIndicator: Bool {
+        isRecording && transcriptionProgress.hasRealtimeBacklog
+    }
+
+    public var shouldShowFinishingTranscriptionProgress: Bool {
+        isFinalizingRecording && transcriptionProgress.isFinishing && transcriptionProgress.remainingWindowCount > 0
     }
 
     public static func requiresSetup(
@@ -529,6 +538,7 @@ public final class AppViewModel {
             recordingDuration = 0
             liveTranscriptDocument = nil
             transcriptionErrorMessage = nil
+            transcriptionProgress = .idle
             if config.localTranscriptionEnabled {
                 let coordinator = RealtimeTranscriptionCoordinator(
                     baseName: baseName,
@@ -537,6 +547,11 @@ public final class AppViewModel {
                     onUpdate: { [weak self] document in
                         Task { @MainActor in
                             self?.liveTranscriptDocument = document
+                        }
+                    },
+                    onProgress: { [weak self] progress in
+                        Task { @MainActor in
+                            self?.transcriptionProgress = progress
                         }
                     }
                 )
@@ -589,6 +604,7 @@ public final class AppViewModel {
             transcriptionCoordinator = nil
             isTranscribing = false
             liveTranscriptDocument = nil
+            transcriptionProgress = .idle
             try? FileManager.default.removeItem(at: outputURL)
             currentRecordingBaseName = nil
             currentRecordingURL = nil
@@ -659,6 +675,7 @@ public final class AppViewModel {
         transcriptionCoordinator = nil
         isTranscribing = false
         isFinalizingRecording = false
+        transcriptionProgress = .idle
         currentRecordingBaseName = nil
         currentRecordingURL = nil
         refreshSessions()
@@ -951,6 +968,9 @@ public final class AppViewModel {
         if config.localTranscriptionThreadCount > 4 {
             config.localTranscriptionThreadCount = 4
         }
+        if !WhisperAccelerationPolicy.supportsGPUAcceleration {
+            config.localTranscriptionUseGPU = false
+        }
         if config.localTranscriptionLanguage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             config.localTranscriptionLanguage = WhisperDefaults.defaultLanguageCode
         }
@@ -1023,6 +1043,7 @@ public final class AppViewModel {
             transcriptionCoordinator = nil
             isTranscribing = false
             liveTranscriptDocument = nil
+            transcriptionProgress = .idle
             currentRecordingBaseName = nil
             currentRecordingURL = nil
             refreshSessions()
@@ -1033,6 +1054,7 @@ public final class AppViewModel {
     private func handleTranscriptionError(_ error: any Error) {
         transcriptionErrorMessage = error.localizedDescription
         isTranscribing = false
+        transcriptionProgress = .idle
         AppLog.warning("Transcription failed: \(error.localizedDescription)", category: .recording)
     }
 

@@ -117,7 +117,8 @@ private struct StatusBarBridgeView: View {
             isFinalizingRecording: viewModel.isFinalizingRecording,
             isProcessing: viewModel.isProcessing,
             showRecordingTime: viewModel.config.showRecordingTime,
-            recordingDuration: viewModel.recordingDuration
+            recordingDuration: viewModel.recordingDuration,
+            transcriptionProgress: viewModel.transcriptionProgress
         )
     }
 }

@@ -8,19 +8,22 @@ public struct StatusBarSnapshot: Equatable, Sendable {
     public var isProcessing: Bool
     public var showRecordingTime: Bool
     public var recordingDuration: Int
+    public var transcriptionProgress: TranscriptionProgress
 
     public init(
         isRecording: Bool,
         isFinalizingRecording: Bool,
         isProcessing: Bool,
         showRecordingTime: Bool,
-        recordingDuration: Int
+        recordingDuration: Int,
+        transcriptionProgress: TranscriptionProgress = .idle
     ) {
         self.isRecording = isRecording
         self.isFinalizingRecording = isFinalizingRecording
         self.isProcessing = isProcessing
         self.showRecordingTime = showRecordingTime
         self.recordingDuration = recordingDuration
+        self.transcriptionProgress = transcriptionProgress
     }
 }
 
@@ -42,7 +45,8 @@ public final class StatusBarController: NSObject {
         isFinalizingRecording: false,
         isProcessing: false,
         showRecordingTime: true,
-        recordingDuration: 0
+        recordingDuration: 0,
+        transcriptionProgress: .idle
     )
 
     public override init() {
@@ -208,9 +212,15 @@ private extension StatusBarSnapshot {
 
     var tooltip: String {
         if isRecording {
+            if transcriptionProgress.hasRealtimeBacklog {
+                return "Steno is recording\nTranscription backlog: \(transcriptionProgress.remainingWindowCount) chunks"
+            }
             return "Steno is recording"
         }
         if isFinalizingRecording {
+            if transcriptionProgress.remainingWindowCount > 0 {
+                return "Steno is finalizing recording\nTranscription chunks remaining: \(transcriptionProgress.remainingWindowCount)"
+            }
             return "Steno is finalizing recording"
         }
         if isProcessing {

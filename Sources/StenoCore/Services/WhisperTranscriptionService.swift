@@ -37,6 +37,7 @@ public actor WhisperTranscriptionService {
     private let modelLocator: WhisperModelLocator
     private var contextBox: WhisperContextBox?
     private var loadedModelName: String?
+    private var loadedUseGPU: Bool?
 
     public init(modelLocator: WhisperModelLocator = WhisperModelLocator()) {
         self.modelLocator = modelLocator
@@ -103,24 +104,49 @@ public actor WhisperTranscriptionService {
     }
 
     private func loadContextIfNeeded(config: AppConfig) throws -> OpaquePointer {
-        if let contextBox, loadedModelName == config.localTranscriptionModel {
+        let effectiveUseGPU = WhisperAccelerationPolicy.effectiveUseGPU(requested: config.localTranscriptionUseGPU)
+        if let contextBox,
+           loadedModelName == config.localTranscriptionModel,
+           loadedUseGPU == effectiveUseGPU {
             return contextBox.pointer
         }
 
         contextBox = nil
         loadedModelName = nil
+        loadedUseGPU = nil
 
         let modelURL = try modelLocator.modelURL(named: config.localTranscriptionModel)
-        var contextParams = whisper_context_default_params()
-        contextParams.use_gpu = config.localTranscriptionUseGPU
-        contextParams.flash_attn = false
+        if config.localTranscriptionUseGPU, !WhisperAccelerationPolicy.supportsGPUAcceleration {
+            AppLog.info("Whisper GPU requested but disabled by hardware policy; using CPU", category: .recording)
+        }
 
-        guard let loadedContext = whisper_init_from_file_with_params(modelURL.path, contextParams) else {
+        if let loadedContext = loadContext(modelURL: modelURL, useGPU: effectiveUseGPU) {
+            contextBox = WhisperContextBox(pointer: loadedContext)
+            loadedModelName = config.localTranscriptionModel
+            loadedUseGPU = effectiveUseGPU
+            return loadedContext
+        }
+
+        guard effectiveUseGPU else {
             throw WhisperTranscriptionError.contextInitializationFailed(modelURL.path)
         }
+
+        AppLog.warning("Whisper Metal context failed; falling back to CPU", category: .recording)
+        guard let loadedContext = loadContext(modelURL: modelURL, useGPU: false) else {
+            throw WhisperTranscriptionError.contextInitializationFailed(modelURL.path)
+        }
+
         contextBox = WhisperContextBox(pointer: loadedContext)
         loadedModelName = config.localTranscriptionModel
+        loadedUseGPU = false
         return loadedContext
+    }
+
+    private func loadContext(modelURL: URL, useGPU: Bool) -> OpaquePointer? {
+        var contextParams = whisper_context_default_params()
+        contextParams.use_gpu = useGPU
+        contextParams.flash_attn = false
+        return whisper_init_from_file_with_params(modelURL.path, contextParams)
     }
 
     private func normalizedLanguage(_ value: String) -> String {

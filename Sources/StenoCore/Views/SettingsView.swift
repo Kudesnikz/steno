@@ -325,10 +325,26 @@ public struct SettingsView: View {
                         Text("Потоки CPU: \(viewModel.config.localTranscriptionThreadCount)")
                     }
                     .disabled(!viewModel.config.localTranscriptionEnabled)
+
+                    if WhisperAccelerationPolicy.supportsGPUAcceleration {
+                        Toggle("Использовать GPU (Metal)", isOn: $viewModel.config.localTranscriptionUseGPU)
+                            .disabled(!viewModel.config.localTranscriptionEnabled)
+                        Text("Metal включается только для нативного Apple Silicon-среза и применяется к следующей записи или тесту модели.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Toggle("Использовать GPU (Metal)", isOn: .constant(false))
+                            .disabled(true)
+                        Text("GPU-ускорение отключено для Intel и Rosetta. Whisper будет использовать CPU.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
             .formStyle(.grouped)
-            .frame(height: 185)
+            .frame(height: 245)
 
             HStack {
                 Button {

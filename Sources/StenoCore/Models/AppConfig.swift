@@ -517,7 +517,7 @@ public extension AppConfig {
         localTranscriptionModel: WhisperDefaults.defaultModelID,
         localTranscriptionLanguage: WhisperDefaults.defaultLanguageCode,
         localTranscriptionThreadCount: 2,
-        localTranscriptionUseGPU: false,
+        localTranscriptionUseGPU: WhisperAccelerationPolicy.supportsGPUAcceleration,
         localTranscriptionDefaultsRevision: WhisperDefaults.currentDefaultsRevision,
         activeAgentID: "default",
         agents: defaultAgents

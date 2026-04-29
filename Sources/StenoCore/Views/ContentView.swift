@@ -14,27 +14,34 @@ public struct ContentView: View {
 
     public var body: some View {
         GeometryReader { geometry in
-            VStack(spacing: 0) {
-                MainWindowToolbar(
-                    viewModel: viewModel,
-                    topInset: geometry.safeAreaInsets.top
-                )
-
-                Divider()
-
-                HSplitView {
-                    SidebarView(
+            ZStack {
+                VStack(spacing: 0) {
+                    MainWindowToolbar(
                         viewModel: viewModel,
-                        showDeleteConfirmation: $showDeleteConfirmation
+                        topInset: geometry.safeAreaInsets.top
                     )
-                        .frame(minWidth: 220, idealWidth: 280, maxWidth: 320, maxHeight: .infinity)
 
-                    DetailView(viewModel: viewModel)
-                        .frame(minWidth: 640, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    Divider()
+
+                    HSplitView {
+                        SidebarView(
+                            viewModel: viewModel,
+                            showDeleteConfirmation: $showDeleteConfirmation
+                        )
+                            .frame(minWidth: 220, idealWidth: 280, maxWidth: 320, maxHeight: .infinity)
+
+                        DetailView(viewModel: viewModel)
+                            .frame(minWidth: 640, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    }
+                    .frame(maxHeight: .infinity)
                 }
-                .frame(maxHeight: .infinity)
+                .ignoresSafeArea(.container, edges: .top)
+
+                if viewModel.shouldShowFinishingTranscriptionProgress {
+                    FinalizingTranscriptionOverlay(progress: viewModel.transcriptionProgress)
+                        .transition(.opacity)
+                }
             }
-            .ignoresSafeArea(.container, edges: .top)
         }
         .frame(minWidth: 920, minHeight: 620)
         .sheet(isPresented: $viewModel.showSettings) {
@@ -314,6 +321,10 @@ private struct SidebarStatusRow: View {
                     .foregroundStyle(.secondary)
             }
 
+            if viewModel.shouldShowTranscriptionLagIndicator {
+                TranscriptionLagIndicator(progress: viewModel.transcriptionProgress)
+            }
+
             Label {
                 Text("Tokens: \(viewModel.config.usedTokens / 1000)k total")
                     .foregroundStyle(.secondary)
@@ -329,6 +340,70 @@ private struct SidebarStatusRow: View {
                 .padding(.leading, 26)
                 .lineLimit(1)
         }
+    }
+}
+
+private struct TranscriptionLagIndicator: View {
+    var progress: TranscriptionProgress
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Транскрибация запаздывает: \(progress.remainingWindowCount) фрагм. · буфер \(bufferedDuration)")
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(8)
+        .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var bufferedDuration: String {
+        StenoFormatters.duration(Int(progress.bufferedAudioSeconds.rounded()))
+    }
+}
+
+private struct FinalizingTranscriptionOverlay: View {
+    var progress: TranscriptionProgress
+
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .ignoresSafeArea()
+
+            VStack(spacing: 12) {
+                Image(systemName: "waveform")
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                Text("Завершение обработки аудио")
+                    .font(.headline)
+
+                Text("Осталось фрагментов: \(progress.remainingWindowCount) · буфер \(bufferedDuration)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let fraction = progress.finishingCompletionFraction {
+                    ProgressView(value: fraction, total: 1)
+                } else {
+                    ProgressView()
+                }
+            }
+            .padding(20)
+            .frame(width: 360)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+            .shadow(radius: 20, y: 8)
+        }
+    }
+
+    private var bufferedDuration: String {
+        StenoFormatters.duration(Int(progress.bufferedAudioSeconds.rounded()))
     }
 }
 
