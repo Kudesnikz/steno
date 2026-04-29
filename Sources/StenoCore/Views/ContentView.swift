@@ -87,6 +87,10 @@ public struct ContentView: View {
                 .controlSize(.small)
             }
         }
+        .toolbar(removing: .title)
+        .background {
+            WindowTitlebarConfigurationView()
+        }
         .sheet(isPresented: $viewModel.showSettings) {
             SettingsView(viewModel: viewModel)
                 .frame(width: 740, height: 560)
@@ -145,6 +149,81 @@ public struct ContentView: View {
             return "hourglass"
         }
         return viewModel.isRecording ? "stop.circle.fill" : "record.circle"
+    }
+}
+
+private struct WindowTitlebarConfigurationView: NSViewRepresentable {
+    func makeNSView(context: Context) -> TitlebarConfigurationNSView {
+        TitlebarConfigurationNSView()
+    }
+
+    func updateNSView(_ nsView: TitlebarConfigurationNSView, context: Context) {
+        nsView.scheduleWindowConfiguration()
+    }
+}
+
+private final class TitlebarConfigurationNSView: NSView {
+    private var configurationTask: Task<Void, Never>?
+
+    deinit {
+        configurationTask?.cancel()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        scheduleWindowConfiguration()
+    }
+
+    func scheduleWindowConfiguration() {
+        configurationTask?.cancel()
+        configurationTask = Task { @MainActor [weak self] in
+            self?.configureWindow()
+
+            for delay in [50, 150, 350] {
+                try? await Task.sleep(for: .milliseconds(delay))
+                guard !Task.isCancelled else {
+                    return
+                }
+                self?.configureWindow()
+            }
+        }
+    }
+
+    private func configureWindow() {
+        guard let window else {
+            return
+        }
+        window.title = "Steno"
+        window.titleVisibility = .visible
+        window.titlebarAppearsTransparent = true
+        window.styleMask.insert(.fullSizeContentView)
+        window.representedURL = nil
+
+        if let toolbar = window.toolbar {
+            configureToolbar(toolbar)
+        }
+    }
+
+    private func configureToolbar(_ toolbar: NSToolbar) {
+        let indexesToRemove = toolbar.items.enumerated().compactMap { index, item -> Int? in
+            let identifier = item.itemIdentifier
+            let rawIdentifier = identifier.rawValue.lowercased()
+            if rawIdentifier.contains("sidebar") {
+                return index
+            }
+            if identifier == .flexibleSpace, index != 0 {
+                return index
+            }
+            return nil
+        }
+
+        for index in indexesToRemove.reversed() {
+            toolbar.removeItem(at: index)
+        }
+
+        if toolbar.items.first?.itemIdentifier != .flexibleSpace {
+            toolbar.insertItem(withItemIdentifier: .flexibleSpace, at: 0)
+        }
     }
 }
 
