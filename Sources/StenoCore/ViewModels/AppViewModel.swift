@@ -634,6 +634,7 @@ public final class AppViewModel {
 
         isCheckingAIConnection = true
         aiConnectionCheckStatus = nil
+        errorMessage = nil
         statusMessage = "Checking AI connection"
         let snapshotConfig = config
         let startedAt = Date()
@@ -664,7 +665,6 @@ public final class AppViewModel {
                 let safeMessage = self.masked(error.localizedDescription, config: snapshotConfig)
                 let finishedAt = Date()
                 self.statusMessage = "AI connection failed"
-                self.errorMessage = "AI check failed: \(safeMessage)"
                 self.aiConnectionCheckStatus = AIConnectionCheckStatus(
                     outcome: .failure,
                     providerName: snapshotConfig.aiProvider.displayName,

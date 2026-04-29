@@ -50,6 +50,24 @@ final class AIProcessingSupportTests: XCTestCase {
         config.modelName = "gemini-2.5-pro"
         XCTAssertFalse(status.matches(config: config))
     }
+
+    func testConnectionCheckFailureTooltipIncludesErrorDetails() {
+        let config = AppConfig.default
+        let status = AIConnectionCheckStatus(
+            outcome: .failure,
+            providerName: config.aiProvider.displayName,
+            providerID: config.aiProvider,
+            baseURL: config.baseURL(for: config.aiProvider),
+            modelName: config.modelName,
+            responseText: nil,
+            message: "API key rejected",
+            checkedAt: Date(timeIntervalSince1970: 0),
+            durationSeconds: 0.1
+        )
+
+        XCTAssertTrue(status.tooltip.contains("Connection failed"))
+        XCTAssertTrue(status.tooltip.contains("Details: API key rejected"))
+    }
 }
 
 private func supportTemporaryDirectory() throws -> URL {
