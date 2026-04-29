@@ -369,6 +369,7 @@ private struct DetailView: View {
                     Text("Transcript").tag("transcript")
                     Text("Info").tag("info")
                 }
+                .labelsHidden()
                 .pickerStyle(.segmented)
                 .padding()
 
