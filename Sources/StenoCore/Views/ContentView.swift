@@ -30,7 +30,7 @@ public struct ContentView: View {
                         .frame(minWidth: 220, idealWidth: 280, maxWidth: 320, maxHeight: .infinity)
 
                     DetailView(viewModel: viewModel)
-                        .frame(minWidth: 640, maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(minWidth: 640, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 }
                 .frame(maxHeight: .infinity)
             }
@@ -421,6 +421,7 @@ private struct DetailView: View {
                     }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         } else {
             ContentUnavailableView("Select a Recording", systemImage: "sidebar.left", description: Text("Choose a recording in the sidebar."))
         }
