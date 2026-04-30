@@ -94,12 +94,9 @@ public final class AppViewModel {
     public var liveTranscriptDocument: TranscriptDocument?
     public var transcriptionErrorMessage: String?
     public var transcriptionProgress: TranscriptionProgress = .idle
-    public var availableWhisperModels: [WhisperModelDescriptor] = WhisperModelCatalogService.fallbackModels
-    public var isRefreshingWhisperModels = false
-    public var whisperDownloadState = WhisperModelDownloadState()
-    public var isTestingWhisperModel = false
-    public var whisperTestResult: String?
-    public var whisperTestErrorMessage: String?
+    public var availableSpeechLanguageOptions: [NativeSpeechLanguageOption] = []
+    public var selectedSpeechLanguageStatus: NativeSpeechLanguageOption?
+    public var isRefreshingSpeechLanguages = false
     public var showOnboarding = false
     public var showSettings = false
     public var permissionState = PermissionState(hasScreenCapture: false, hasMicrophone: false)
@@ -110,12 +107,9 @@ public final class AppViewModel {
     @ObservationIgnored private let captureDisplayService: CaptureDisplayService
     @ObservationIgnored private let aiClient: AIProcessingClient
     @ObservationIgnored private let modelCatalogService: AIModelCatalogService
-    @ObservationIgnored private let whisperModelCatalogService: WhisperModelCatalogService
-    @ObservationIgnored private let whisperModelStore: WhisperModelStore
-    @ObservationIgnored private let whisperModelDownloadService: WhisperModelDownloadService
-    @ObservationIgnored private let whisperVoiceTestService: WhisperVoiceTestService
+    @ObservationIgnored private let speechAvailabilityService: NativeSpeechAvailabilityService
     @ObservationIgnored private var recorder: ScreenRecordingService?
-    @ObservationIgnored private var transcriptionCoordinator: RealtimeTranscriptionCoordinator?
+    @ObservationIgnored private var transcriptionCoordinator: ContinuousSpeechCoordinator?
     @ObservationIgnored private var recordingTimerTask: Task<Void, Never>?
     @ObservationIgnored private var aiTask: Task<Void, Never>?
     @ObservationIgnored private var currentRecordingBaseName: String?
@@ -127,20 +121,14 @@ public final class AppViewModel {
         captureDisplayService: CaptureDisplayService = CaptureDisplayService(),
         aiClient: AIProcessingClient = AIProcessingClient(),
         modelCatalogService: AIModelCatalogService = AIModelCatalogService(),
-        whisperModelCatalogService: WhisperModelCatalogService = WhisperModelCatalogService(),
-        whisperModelStore: WhisperModelStore = WhisperModelStore(),
-        whisperModelDownloadService: WhisperModelDownloadService = WhisperModelDownloadService(),
-        whisperVoiceTestService: WhisperVoiceTestService = WhisperVoiceTestService()
+        speechAvailabilityService: NativeSpeechAvailabilityService = NativeSpeechAvailabilityService()
     ) {
         self.configStore = configStore
         self.permissionsService = permissionsService
         self.captureDisplayService = captureDisplayService
         self.aiClient = aiClient
         self.modelCatalogService = modelCatalogService
-        self.whisperModelCatalogService = whisperModelCatalogService
-        self.whisperModelStore = whisperModelStore
-        self.whisperModelDownloadService = whisperModelDownloadService
-        self.whisperVoiceTestService = whisperVoiceTestService
+        self.speechAvailabilityService = speechAvailabilityService
 
         var loadedConfig = AppConfig.default
         var didFindExistingConfig = false
@@ -150,12 +138,12 @@ public final class AppViewModel {
         do {
             let loadResult = try configStore.load()
             loadedConfig = loadResult.config
-            let didMigrateWhisperDefaults = Self.migrateWhisperDefaultsIfNeeded(&loadedConfig)
+            let didMigrateTranscriptionDefaults = Self.migrateTranscriptionDefaultsIfNeeded(&loadedConfig)
             didFindExistingConfig = loadResult.didFindExistingConfig
             if loadResult.didMigrateLegacyConfig {
                 initialStatus = "Legacy config migrated to ~/.steno/config.json"
             }
-            if didMigrateWhisperDefaults {
+            if didMigrateTranscriptionDefaults {
                 try? configStore.save(loadedConfig)
             }
         } catch {
@@ -183,7 +171,7 @@ public final class AppViewModel {
             await refreshAIModels()
         }
         Task {
-            await refreshWhisperModels()
+            await refreshSpeechLanguageOptions()
         }
         AppLog.info("AppViewModel initialized; onboarding=\(showOnboarding)", category: .app)
     }
@@ -230,16 +218,25 @@ public final class AppViewModel {
         permissionState: PermissionState
     ) -> Bool {
         !didFindExistingConfig ||
-        !permissionState.isFullyGranted ||
+        !hasRequiredPermissions(config: config, permissionState: permissionState) ||
         config.apiKey(for: config.aiProvider).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    public static func hasRequiredPermissions(config: AppConfig, permissionState: PermissionState) -> Bool {
+        permissionState.hasScreenCapture &&
+            permissionState.hasMicrophone &&
+            (!config.localTranscriptionEnabled || permissionState.hasSpeechRecognition)
     }
 
     public func refreshPermissions() {
         permissionState = permissionsService.currentState()
-        if !permissionState.isFullyGranted {
+        if !Self.hasRequiredPermissions(config: config, permissionState: permissionState) {
             showOnboarding = true
         }
-        AppLog.info("Refreshed permissions screen=\(permissionState.hasScreenCapture) microphone=\(permissionState.hasMicrophone)", category: .permissions)
+        AppLog.info(
+            "Refreshed permissions screen=\(permissionState.hasScreenCapture) microphone=\(permissionState.hasMicrophone) speech=\(permissionState.hasSpeechRecognition)",
+            category: .permissions
+        )
     }
 
     public func refreshCaptureDisplays() async {
@@ -268,6 +265,7 @@ public final class AppViewModel {
         permissionsService.requestScreenCaptureAccess()
         Task {
             _ = await permissionsService.requestMicrophoneAccess()
+            _ = await permissionsService.requestSpeechRecognitionAccess()
             await MainActor.run {
                 self.refreshPermissions()
             }
@@ -280,6 +278,14 @@ public final class AppViewModel {
 
     public func openMicrophoneSettings() {
         permissionsService.openMicrophoneSettings()
+    }
+
+    public func openSpeechRecognitionSettings() {
+        permissionsService.openSpeechRecognitionSettings()
+    }
+
+    public func openDictationSettings() {
+        permissionsService.openDictationSettings()
     }
 
     public func saveConfig() {
@@ -359,93 +365,22 @@ public final class AppViewModel {
         return models
     }
 
-    public var installedWhisperModels: [WhisperModelDescriptor] {
-        availableWhisperModels.filter(\.isInstalled)
-    }
-
-    public var activeWhisperModel: WhisperModelDescriptor? {
-        availableWhisperModels.first { $0.id == config.localTranscriptionModel }
-    }
-
-    public func refreshWhisperModels() async {
-        guard !isRefreshingWhisperModels else {
+    public func refreshSpeechLanguageOptions() async {
+        guard !isRefreshingSpeechLanguages else {
             return
         }
-        isRefreshingWhisperModels = true
-        let remoteModels = await whisperModelCatalogService.refreshCatalog()
-        availableWhisperModels = await whisperModelStore.mergedCatalog(remoteModels: remoteModels)
-        let installedIDs = Set(await whisperModelStore.installedModelIDs())
-        if !installedIDs.contains(config.localTranscriptionModel) ||
-            !WhisperModelCatalogService.isSupportedCatalogModelID(config.localTranscriptionModel) {
-            config.localTranscriptionModel = WhisperDefaults.defaultModelID
-        }
-        isRefreshingWhisperModels = false
+        isRefreshingSpeechLanguages = true
+        let options = await speechAvailabilityService.options()
+        availableSpeechLanguageOptions = options
+        selectedSpeechLanguageStatus = await speechAvailabilityService.option(for: config)
+        isRefreshingSpeechLanguages = false
     }
 
-    public func downloadWhisperModels(ids: Set<String>) async {
-        guard !ids.isEmpty, !whisperDownloadState.isDownloading else {
-            return
+    public func selectTranscriptionLanguage(_ languageCode: String) {
+        config.localTranscriptionLanguage = NativeSpeechDefaults.normalizedLanguageCode(languageCode)
+        Task {
+            selectedSpeechLanguageStatus = await speechAvailabilityService.option(for: config)
         }
-        for id in ids.sorted() {
-            guard let model = availableWhisperModels.first(where: { $0.id == id }), !model.isInstalled else {
-                continue
-            }
-            whisperDownloadState = WhisperModelDownloadState(modelID: id, isDownloading: true)
-            statusMessage = "Downloading Whisper model: \(model.displayName)"
-            do {
-                try await whisperModelDownloadService.download(model)
-                AppLog.info("Downloaded Whisper model \(id)", category: .config)
-            } catch {
-                whisperTestErrorMessage = error.localizedDescription
-                AppLog.error("Whisper model download failed \(id): \(error.localizedDescription)", category: .config)
-                break
-            }
-            await refreshWhisperModels()
-        }
-        whisperDownloadState = WhisperModelDownloadState()
-        statusMessage = "Whisper models updated"
-    }
-
-    public func deleteWhisperModels(ids: Set<String>) async {
-        for id in ids.sorted() {
-            do {
-                try await whisperModelStore.delete(modelID: id)
-                AppLog.info("Deleted Whisper model \(id)", category: .config)
-            } catch {
-                whisperTestErrorMessage = error.localizedDescription
-                AppLog.error("Whisper model delete failed \(id): \(error.localizedDescription)", category: .config)
-            }
-        }
-        let installedIDs = Set(await whisperModelStore.installedModelIDs())
-        if !installedIDs.contains(config.localTranscriptionModel) ||
-            !WhisperModelCatalogService.isSupportedCatalogModelID(config.localTranscriptionModel) {
-            config.localTranscriptionModel = WhisperDefaults.defaultModelID
-        }
-        await refreshWhisperModels()
-    }
-
-    public func runWhisperVoiceTest(modelID: String?) async {
-        guard !isTestingWhisperModel else {
-            return
-        }
-        let selectedModelID = modelID ?? config.localTranscriptionModel
-        var testConfig = config
-        testConfig.localTranscriptionModel = selectedModelID
-        isTestingWhisperModel = true
-        whisperTestResult = nil
-        whisperTestErrorMessage = nil
-        statusMessage = "Recording 5 seconds for Whisper test"
-        do {
-            let result = try await whisperVoiceTestService.runTest(config: testConfig, durationSeconds: 5)
-            let text = result.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-            whisperTestResult = text.isEmpty ? "Whisper returned an empty transcript." : text
-            statusMessage = "Whisper test completed"
-        } catch {
-            whisperTestErrorMessage = error.localizedDescription
-            statusMessage = "Whisper test failed"
-            AppLog.error("Whisper voice test failed: \(error.localizedDescription)", category: .config)
-        }
-        isTestingWhisperModel = false
     }
 
     public func refreshSessions() {
@@ -493,13 +428,13 @@ public final class AppViewModel {
             return
         }
         refreshPermissions()
-        guard permissionState.hasScreenCapture, permissionState.hasMicrophone else {
+        guard Self.hasRequiredPermissions(config: config, permissionState: permissionState) else {
             let missing = missingPermissionNames()
             errorMessage = "Recording blocked. Grant permissions: \(missing)."
             statusMessage = "Recording blocked by macOS permissions"
             showOnboarding = true
             AppLog.warning(
-                "Recording blocked by permissions screen=\(permissionState.hasScreenCapture) microphone=\(permissionState.hasMicrophone)",
+                "Recording blocked by permissions screen=\(permissionState.hasScreenCapture) microphone=\(permissionState.hasMicrophone) speech=\(permissionState.hasSpeechRecognition)",
                 category: .recording
             )
             return
@@ -531,7 +466,7 @@ public final class AppViewModel {
             transcriptionErrorMessage = nil
             transcriptionProgress = .idle
             if config.localTranscriptionEnabled {
-                let coordinator = RealtimeTranscriptionCoordinator(
+                let coordinator = ContinuousSpeechCoordinator(
                     baseName: baseName,
                     saveDirectory: saveURL,
                     config: config,
@@ -546,12 +481,13 @@ public final class AppViewModel {
                         }
                     }
                 )
+                try await coordinator.prepare()
                 transcriptionCoordinator = coordinator
                 isTranscribing = true
                 liveTranscriptDocument = TranscriptDocument(
                     baseName: baseName,
-                    modelName: config.localTranscriptionModel,
-                    language: config.localTranscriptionLanguage
+                    modelName: NativeSpeechDefaults.engineDisplayName,
+                    language: NativeSpeechDefaults.normalizedLanguageCode(config.localTranscriptionLanguage)
                 )
             }
             AppLog.info(
@@ -576,8 +512,8 @@ public final class AppViewModel {
                 try sessionStore.updateTranscriptionMetadata(
                     baseName: baseName,
                     status: .running,
-                    modelName: config.localTranscriptionModel,
-                    language: config.localTranscriptionLanguage,
+                    modelName: NativeSpeechDefaults.engineDisplayName,
+                    language: NativeSpeechDefaults.normalizedLanguageCode(config.localTranscriptionLanguage),
                     segmentCount: 0
                 )
             }
@@ -636,8 +572,8 @@ public final class AppViewModel {
                             try? sessionStore.updateTranscriptionMetadata(
                                 baseName: baseName,
                                 status: .failed,
-                                modelName: config.localTranscriptionModel,
-                                language: config.localTranscriptionLanguage,
+                                modelName: NativeSpeechDefaults.engineDisplayName,
+                                language: NativeSpeechDefaults.normalizedLanguageCode(config.localTranscriptionLanguage),
                                 segmentCount: liveTranscriptDocument?.segments.count ?? 0,
                                 error: String(error.localizedDescription.prefix(200))
                             )
@@ -914,29 +850,17 @@ public final class AppViewModel {
         AppLog.info("Opened output folder", category: .ui)
     }
 
-    private static func migrateWhisperDefaultsIfNeeded(_ config: inout AppConfig) -> Bool {
+    private static func migrateTranscriptionDefaultsIfNeeded(_ config: inout AppConfig) -> Bool {
         let previousRevision = config.localTranscriptionDefaultsRevision
-        guard previousRevision < WhisperDefaults.currentDefaultsRevision else {
+        guard previousRevision < NativeSpeechDefaults.currentDefaultsRevision else {
             return false
         }
 
-        let modelID = config.localTranscriptionModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        if modelID.isEmpty ||
-            modelID == WhisperDefaults.legacyBundledModelID ||
-            !WhisperModelCatalogService.isSupportedCatalogModelID(modelID) {
-            config.localTranscriptionModel = WhisperDefaults.defaultModelID
-        }
-
-        let language = config.localTranscriptionLanguage.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if language.isEmpty || language == "auto" {
-            config.localTranscriptionLanguage = WhisperDefaults.defaultLanguageCode
-        }
-
-        if previousRevision < 2 {
-            config.localTranscriptionUseGPU = WhisperAccelerationPolicy.supportsGPUAcceleration
-        }
-
-        config.localTranscriptionDefaultsRevision = WhisperDefaults.currentDefaultsRevision
+        config.localTranscriptionModel = NativeSpeechDefaults.engineID
+        config.localTranscriptionLanguage = NativeSpeechDefaults.normalizedLanguageCode(config.localTranscriptionLanguage)
+        config.localTranscriptionThreadCount = 1
+        config.localTranscriptionUseGPU = false
+        config.localTranscriptionDefaultsRevision = NativeSpeechDefaults.currentDefaultsRevision
         return true
     }
 
@@ -954,24 +878,12 @@ public final class AppViewModel {
         if !config.agents.contains(where: { $0.id == config.activeAgentID }) {
             config.activeAgentID = config.agents.first?.id ?? "default"
         }
-        if config.localTranscriptionModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-            !WhisperModelCatalogService.isSupportedCatalogModelID(config.localTranscriptionModel) {
-            config.localTranscriptionModel = WhisperDefaults.defaultModelID
-        }
-        if config.localTranscriptionThreadCount < 1 {
-            config.localTranscriptionThreadCount = 1
-        }
-        if config.localTranscriptionThreadCount > 4 {
-            config.localTranscriptionThreadCount = 4
-        }
-        if !WhisperAccelerationPolicy.supportsGPUAcceleration {
-            config.localTranscriptionUseGPU = false
-        }
-        if config.localTranscriptionLanguage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            config.localTranscriptionLanguage = WhisperDefaults.defaultLanguageCode
-        }
+        config.localTranscriptionModel = NativeSpeechDefaults.engineID
+        config.localTranscriptionThreadCount = 1
+        config.localTranscriptionUseGPU = false
+        config.localTranscriptionLanguage = NativeSpeechDefaults.normalizedLanguageCode(config.localTranscriptionLanguage)
         normalizeCaptureDisplaySelection(shouldPersist: false)
-        config.localTranscriptionDefaultsRevision = WhisperDefaults.currentDefaultsRevision
+        config.localTranscriptionDefaultsRevision = NativeSpeechDefaults.currentDefaultsRevision
     }
 
     private func normalizeCaptureDisplaySelection(shouldPersist: Bool) {
@@ -1054,7 +966,7 @@ public final class AppViewModel {
         AppLog.warning("Transcription failed: \(error.localizedDescription)", category: .recording)
     }
 
-    private func makeAudioHandler(coordinator: RealtimeTranscriptionCoordinator?) -> ScreenRecordingService.AudioHandler? {
+    private func makeAudioHandler(coordinator: ContinuousSpeechCoordinator?) -> ScreenRecordingService.AudioHandler? {
         guard let coordinator else {
             return nil
         }
@@ -1093,6 +1005,9 @@ public final class AppViewModel {
         }
         if !permissionState.hasMicrophone {
             names.append("Microphone")
+        }
+        if config.localTranscriptionEnabled, !permissionState.hasSpeechRecognition {
+            names.append("Speech Recognition")
         }
         return names.joined(separator: ", ")
     }

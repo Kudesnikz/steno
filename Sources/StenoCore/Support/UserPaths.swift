@@ -47,7 +47,4 @@ public enum UserPaths {
             .appending(path: "ScreenRecordings", directoryHint: .isDirectory)
     }
 
-    public static var whisperModelsDirectory: URL {
-        stenoDirectory.appending(path: "whisper-models", directoryHint: .isDirectory)
-    }
 }

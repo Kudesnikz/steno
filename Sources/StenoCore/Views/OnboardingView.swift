@@ -37,6 +37,13 @@ public struct OnboardingView: View {
                     actionTitle: "Настройки",
                     action: viewModel.openMicrophoneSettings
                 )
+                Divider()
+                PermissionRow(
+                    title: "Распознавание речи",
+                    isGranted: viewModel.permissionState.hasSpeechRecognition,
+                    actionTitle: "Настройки",
+                    action: viewModel.openSpeechRecognitionSettings
+                )
             }
             .padding()
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
@@ -130,6 +137,7 @@ public struct OnboardingView: View {
     private var canContinue: Bool {
         viewModel.permissionState.hasScreenCapture &&
         viewModel.permissionState.hasMicrophone &&
+        (!viewModel.config.localTranscriptionEnabled || viewModel.permissionState.hasSpeechRecognition) &&
         trimmedAPIKey.count > 5
     }
 }

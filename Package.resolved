@@ -83,14 +83,6 @@
       }
     },
     {
-      "identity" : "whisper.spm",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/ggml-org/whisper.spm",
-      "state" : {
-        "revision" : "a2085436c2eb796af90956b62bd64731f5e5b823"
-      }
-    },
-    {
       "identity" : "yams",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/jpsim/Yams.git",

@@ -11,14 +11,3 @@ public enum HardwareCapabilities {
         #endif
     }
 }
-
-/// Central policy for deciding whether Whisper may request Metal acceleration.
-public enum WhisperAccelerationPolicy {
-    public static var supportsGPUAcceleration: Bool {
-        HardwareCapabilities.isNativeAppleSilicon
-    }
-
-    public static func effectiveUseGPU(requested: Bool) -> Bool {
-        requested && supportsGPUAcceleration
-    }
-}

@@ -33,7 +33,7 @@ final class SessionStoreTests: XCTestCase {
         let store = SessionStore(saveDirectory: directory)
         let document = TranscriptDocument(
             baseName: baseName,
-            modelName: "ggml-tiny-q5_1",
+            modelName: NativeSpeechDefaults.engineDisplayName,
             language: "ru",
             segments: [TranscriptSegment(source: .system, startTimeSeconds: 0, endTimeSeconds: 2, text: "Текст")]
         )

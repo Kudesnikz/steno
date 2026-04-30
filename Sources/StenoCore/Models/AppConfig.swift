@@ -240,8 +240,15 @@ public struct AppConfig: Codable, Hashable, Sendable {
         noiseReductionEnabled = try container.decodeIfPresent(Bool.self, forKey: .noiseReductionEnabled) ?? defaults.noiseReductionEnabled
         localTranscriptionEnabled = try container.decodeIfPresent(Bool.self, forKey: .localTranscriptionEnabled) ?? defaults.localTranscriptionEnabled
         attachTranscriptToAI = try container.decodeIfPresent(Bool.self, forKey: .attachTranscriptToAI) ?? defaults.attachTranscriptToAI
-        localTranscriptionModel = try container.decodeIfPresent(String.self, forKey: .localTranscriptionModel) ?? defaults.localTranscriptionModel
-        localTranscriptionLanguage = try container.decodeIfPresent(String.self, forKey: .localTranscriptionLanguage) ?? defaults.localTranscriptionLanguage
+        let decodedTranscriptionModel = try container.decodeIfPresent(String.self, forKey: .localTranscriptionModel) ?? defaults.localTranscriptionModel
+        if decodedTranscriptionModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            localTranscriptionModel = defaults.localTranscriptionModel
+        } else {
+            localTranscriptionModel = NativeSpeechDefaults.engineID
+        }
+        localTranscriptionLanguage = NativeSpeechDefaults.normalizedLanguageCode(
+            try container.decodeIfPresent(String.self, forKey: .localTranscriptionLanguage) ?? defaults.localTranscriptionLanguage
+        )
         localTranscriptionThreadCount = try container.decodeIfPresent(Int.self, forKey: .localTranscriptionThreadCount) ?? defaults.localTranscriptionThreadCount
         localTranscriptionUseGPU = try container.decodeIfPresent(Bool.self, forKey: .localTranscriptionUseGPU) ?? defaults.localTranscriptionUseGPU
         localTranscriptionDefaultsRevision = try container.decodeIfPresent(
@@ -282,7 +289,7 @@ public extension AppConfig {
 
             Возможные источники:
             - видео или аудиозапись встречи;
-            - локальная транскрибация Whisper;
+            - локальная транскрибация;
             - таймкоды;
             - OCR имён и текста на экране;
             - список участников;
@@ -514,11 +521,11 @@ public extension AppConfig {
         noiseReductionEnabled: false,
         localTranscriptionEnabled: true,
         attachTranscriptToAI: true,
-        localTranscriptionModel: WhisperDefaults.defaultModelID,
-        localTranscriptionLanguage: WhisperDefaults.defaultLanguageCode,
+        localTranscriptionModel: NativeSpeechDefaults.engineID,
+        localTranscriptionLanguage: NativeSpeechDefaults.defaultLanguageCode,
         localTranscriptionThreadCount: 2,
-        localTranscriptionUseGPU: WhisperAccelerationPolicy.supportsGPUAcceleration,
-        localTranscriptionDefaultsRevision: WhisperDefaults.currentDefaultsRevision,
+        localTranscriptionUseGPU: false,
+        localTranscriptionDefaultsRevision: NativeSpeechDefaults.currentDefaultsRevision,
         activeAgentID: "default",
         agents: defaultAgents
     )

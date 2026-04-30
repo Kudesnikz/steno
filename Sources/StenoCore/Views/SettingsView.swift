@@ -4,7 +4,6 @@ import SwiftUI
 public struct SettingsView: View {
     @Bindable private var viewModel: AppViewModel
     @State private var selectedAgentID: String?
-    @State private var selectedWhisperModelIDs = Set<String>()
     @State private var isConnectionStatusPopoverPresented = false
 
     public init(viewModel: AppViewModel) {
@@ -17,8 +16,8 @@ public struct SettingsView: View {
             TabView {
                 generalTab
                     .tabItem { Text("Общие") }
-                whisperModelsTab
-                    .tabItem { Text("Whisper") }
+                transcriptionTab
+                    .tabItem { Text("Транскрибация") }
                 agentsTab
                     .tabItem { Text("Агенты") }
             }
@@ -114,6 +113,11 @@ public struct SettingsView: View {
                     title: "Микрофон",
                     isGranted: viewModel.permissionState.hasMicrophone,
                     action: viewModel.openMicrophoneSettings
+                )
+                PermissionSettingsRow(
+                    title: "Распознавание речи",
+                    isGranted: viewModel.permissionState.hasSpeechRecognition,
+                    action: viewModel.openSpeechRecognitionSettings
                 )
                 Button("Refresh Permissions") {
                     viewModel.refreshPermissions()
@@ -295,195 +299,87 @@ public struct SettingsView: View {
         return "\(model.displayName) · \(model.tier.displayName) · \(dynamicMarker)"
     }
 
-    private var whisperModelsTab: some View {
-        ScrollView {
-            VStack(spacing: 12) {
-                Form {
-                    Section("Realtime Transcription") {
-                        Toggle("Локальная транскрибация Whisper", isOn: $viewModel.config.localTranscriptionEnabled)
-                        Toggle("Передавать транскрипт в AI", isOn: $viewModel.config.attachTranscriptToAI)
-                            .disabled(!viewModel.config.localTranscriptionEnabled)
+    private var transcriptionTab: some View {
+        Form {
+            Section("Local Transcription") {
+                Toggle("Локальная транскрибация Apple Speech", isOn: $viewModel.config.localTranscriptionEnabled)
+                Toggle("Передавать транскрипт в AI", isOn: $viewModel.config.attachTranscriptToAI)
+                    .disabled(!viewModel.config.localTranscriptionEnabled)
 
-                        Picker("Активная модель", selection: $viewModel.config.localTranscriptionModel) {
-                            if viewModel.installedWhisperModels.isEmpty {
-                                Text(viewModel.config.localTranscriptionModel).tag(viewModel.config.localTranscriptionModel)
-                            } else {
-                                ForEach(viewModel.installedWhisperModels) { model in
-                                    Text("\(model.displayName) · \(model.installState.displayName)").tag(model.id)
-                                }
-                            }
-                        }
-                        .disabled(!viewModel.config.localTranscriptionEnabled)
-
-                        Picker("Язык", selection: $viewModel.config.localTranscriptionLanguage) {
-                            Text("Русский").tag("ru")
-                            Text("Автоматически").tag("auto")
-                            Text("English").tag("en")
-                        }
-                        .disabled(!viewModel.config.localTranscriptionEnabled)
-
-                        Stepper(value: $viewModel.config.localTranscriptionThreadCount, in: 1...4) {
-                            Text("Потоки CPU: \(viewModel.config.localTranscriptionThreadCount)")
-                        }
-                        .disabled(!viewModel.config.localTranscriptionEnabled)
-
-                        whisperGPUSetting
+                Picker("Язык распознавания", selection: Binding(
+                    get: { viewModel.config.localTranscriptionLanguage },
+                    set: { viewModel.selectTranscriptionLanguage($0) }
+                )) {
+                    ForEach(speechLanguageOptions) { option in
+                        Text(option.displayName).tag(option.localeIdentifier)
                     }
                 }
-                .formStyle(.grouped)
-                .frame(height: 245)
+                .disabled(!viewModel.config.localTranscriptionEnabled)
 
-                whisperModelActions
+                speechLanguageStatus
 
-                List(selection: $selectedWhisperModelIDs) {
-                    ForEach(viewModel.availableWhisperModels) { model in
-                        WhisperModelRow(model: model, isActive: model.id == viewModel.config.localTranscriptionModel)
-                            .tag(model.id)
+                HStack {
+                    Button {
+                        Task { await viewModel.refreshSpeechLanguageOptions() }
+                    } label: {
+                        if viewModel.isRefreshingSpeechLanguages {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Label("Обновить языки", systemImage: "arrow.clockwise")
+                        }
+                    }
+                    .disabled(viewModel.isRefreshingSpeechLanguages)
+
+                    Button {
+                        viewModel.openDictationSettings()
+                    } label: {
+                        Label("Управлять языками диктовки", systemImage: "gearshape")
                     }
                 }
-                .frame(height: 180)
-
-                whisperTestResultBox
             }
-            .padding(.vertical, 4)
         }
+        .formStyle(.grouped)
         .task {
-            await viewModel.refreshWhisperModels()
+            await viewModel.refreshSpeechLanguageOptions()
         }
     }
 
+    private var speechLanguageOptions: [NativeSpeechLanguageOption] {
+        if viewModel.availableSpeechLanguageOptions.isEmpty {
+            return [
+                NativeSpeechLanguageOption(
+                    id: NativeSpeechDefaults.systemLanguageCode,
+                    localeIdentifier: NativeSpeechDefaults.systemLanguageCode,
+                    resolvedLocaleIdentifier: NativeSpeechDefaults.systemLanguageCode,
+                    displayName: "System Language",
+                    isSystemSelection: true,
+                    isSupported: true,
+                    isRecognizerAvailable: true,
+                    isOfflineAvailable: false
+                )
+            ]
+        }
+        return viewModel.availableSpeechLanguageOptions
+    }
+
     @ViewBuilder
-    private var whisperGPUSetting: some View {
-        if WhisperAccelerationPolicy.supportsGPUAcceleration {
-            Toggle("Использовать GPU (Metal)", isOn: $viewModel.config.localTranscriptionUseGPU)
-                .disabled(!viewModel.config.localTranscriptionEnabled)
-            Text("Metal включается по умолчанию на Apple Silicon и применяется к следующей записи или тесту модели.")
+    private var speechLanguageStatus: some View {
+        if let status = viewModel.selectedSpeechLanguageStatus {
+            LabeledContent("Оффлайн-статус") {
+                Label(status.statusText, systemImage: status.isOfflineAvailable ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(status.isOfflineAvailable ? .green : .orange)
+            }
+            Text("Steno использует только on-device recognition. Если язык не готов, установите его в настройках диктовки macOS и обновите список.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         } else {
-            Toggle("Использовать GPU (Metal)", isOn: .constant(false))
-                .disabled(true)
-            Text("GPU-ускорение отключено для Intel и Rosetta. Whisper будет использовать CPU.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private var whisperModelActions: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Button {
-                    Task { await viewModel.refreshWhisperModels() }
-                } label: {
-                    if viewModel.isRefreshingWhisperModels {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Label("Обновить каталог", systemImage: "arrow.clockwise")
-                    }
-                }
-                .disabled(viewModel.isRefreshingWhisperModels || viewModel.whisperDownloadState.isDownloading)
-
-                Button {
-                    Task { await viewModel.downloadWhisperModels(ids: selectedWhisperModelIDs) }
-                } label: {
-                    if viewModel.whisperDownloadState.isDownloading {
-                        Text("Скачивается...")
-                    } else {
-                        Label("Скачать", systemImage: "arrow.down.circle")
-                    }
-                }
-                .disabled(selectedDownloadableModelIDs.isEmpty || viewModel.whisperDownloadState.isDownloading)
-
-                Button(role: .destructive) {
-                    Task { await viewModel.deleteWhisperModels(ids: selectedWhisperModelIDs) }
-                } label: {
-                    Label("Удалить", systemImage: "trash")
-                }
-                .disabled(selectedDeletableModelIDs.isEmpty || viewModel.whisperDownloadState.isDownloading)
-
-                Button {
-                    if let id = selectedSingleInstalledModelID {
-                        viewModel.config.localTranscriptionModel = id
-                    }
-                } label: {
-                    Label("Использовать", systemImage: "checkmark.circle")
-                }
-                .disabled(selectedSingleInstalledModelID == nil)
-                Spacer()
-            }
-
-            HStack {
-                Spacer()
-                Button {
-                    Task { await viewModel.runWhisperVoiceTest(modelID: selectedSingleInstalledModelID) }
-                } label: {
-                    if viewModel.isTestingWhisperModel {
-                        Text("Идет тест...")
-                    } else {
-                        Label("Тест 5 сек", systemImage: "mic")
-                    }
-                }
-                .disabled(viewModel.isTestingWhisperModel || viewModel.whisperDownloadState.isDownloading || testModelID == nil)
-            }
-        }
-    }
-
-    private var whisperTestResultBox: some View {
-        GroupBox("Результат теста") {
-            if viewModel.isTestingWhisperModel {
-                HStack {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Говорите в микрофон. Запись идет 5 секунд.")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                }
-                .padding(.vertical, 4)
-            } else if let error = viewModel.whisperTestErrorMessage {
-                Text(error)
-                    .foregroundStyle(.red)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else if let result = viewModel.whisperTestResult {
-                ScrollView {
-                    Text(result)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 4)
-                }
-                .frame(maxHeight: 90)
-            } else {
-                Text("Выберите установленную модель или используйте активную, затем запустите тест.")
+            LabeledContent("Оффлайн-статус") {
+                Text("Not checked")
                     .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-    }
-
-    private var selectedModels: [WhisperModelDescriptor] {
-        viewModel.availableWhisperModels.filter { selectedWhisperModelIDs.contains($0.id) }
-    }
-
-    private var selectedDownloadableModelIDs: Set<String> {
-        Set(selectedModels.filter { !$0.isInstalled }.map(\.id))
-    }
-
-    private var selectedDeletableModelIDs: Set<String> {
-        Set(selectedModels.filter(\.canDelete).map(\.id))
-    }
-
-    private var selectedSingleInstalledModelID: String? {
-        guard selectedWhisperModelIDs.count == 1 else {
-            return nil
-        }
-        let installed = selectedModels.filter(\.isInstalled)
-        return installed.count == 1 ? installed[0].id : nil
-    }
-
-    private var testModelID: String? {
-        selectedSingleInstalledModelID ?? viewModel.activeWhisperModel?.id
     }
 
     private var agentsTab: some View {
@@ -587,63 +483,6 @@ private struct AgentEditor: View {
                 .frame(minHeight: 300)
         }
         .formStyle(.grouped)
-    }
-}
-
-private struct WhisperModelRow: View {
-    var model: WhisperModelDescriptor
-    var isActive: Bool
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: iconName)
-                .foregroundStyle(iconColor)
-                .frame(width: 18)
-
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(model.displayName)
-                        .lineLimit(1)
-                    if isActive {
-                        Text("active")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.green)
-                    }
-                }
-                Text("\(model.fileName) · \(model.sizeDescription)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer()
-
-            Text(model.installState.displayName)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(width: 88, alignment: .trailing)
-        }
-        .padding(.vertical, 3)
-    }
-
-    private var iconName: String {
-        switch model.installState {
-        case .bundled:
-            "shippingbox.fill"
-        case .downloaded:
-            "checkmark.circle.fill"
-        case .remote:
-            "icloud.and.arrow.down"
-        }
-    }
-
-    private var iconColor: Color {
-        switch model.installState {
-        case .bundled, .downloaded:
-            .green
-        case .remote:
-            .secondary
-        }
     }
 }
 

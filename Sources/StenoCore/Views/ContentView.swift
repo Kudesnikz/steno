@@ -593,7 +593,7 @@ private struct TranscriptPane: View {
                 ContentUnavailableView(
                     "Transcript Unavailable",
                     systemImage: "text.bubble",
-                    description: Text(viewModel.config.localTranscriptionEnabled ? "Transcript will appear while recording audio is processed." : "Local Whisper transcription is disabled in Settings.")
+                    description: Text(viewModel.config.localTranscriptionEnabled ? "Transcript will appear while recording audio is processed." : "Local transcription is disabled in Settings.")
                 )
             }
         }

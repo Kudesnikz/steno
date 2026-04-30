@@ -1,3 +1,4 @@
+import CoreMedia
 import Foundation
 
 public enum RecordingAudioSource: String, Codable, Hashable, Sendable {
@@ -25,6 +26,42 @@ public struct RecordingAudioChunk: Hashable, Sendable {
         self.startTimeSeconds = startTimeSeconds
         self.durationSeconds = durationSeconds
         self.samples = samples
+    }
+}
+
+public struct RecordingAudioLevel: Hashable, Sendable {
+    public var rms: Double
+    public var peak: Double
+
+    public init(rms: Double = 0, peak: Double = 0) {
+        self.rms = max(0, rms)
+        self.peak = max(0, peak)
+    }
+}
+
+public struct RecordingAudioBuffer: @unchecked Sendable {
+    public var source: RecordingAudioSource
+    public var startTimeSeconds: Double
+    public var durationSeconds: Double
+    public var sampleBuffer: CMSampleBuffer
+    public var level: RecordingAudioLevel
+
+    public init(
+        source: RecordingAudioSource,
+        startTimeSeconds: Double,
+        durationSeconds: Double,
+        sampleBuffer: CMSampleBuffer,
+        level: RecordingAudioLevel = RecordingAudioLevel()
+    ) {
+        self.source = source
+        self.startTimeSeconds = startTimeSeconds
+        self.durationSeconds = durationSeconds
+        self.sampleBuffer = sampleBuffer
+        self.level = level
+    }
+
+    public var endTimeSeconds: Double {
+        startTimeSeconds + durationSeconds
     }
 }
 
@@ -168,27 +205,8 @@ public struct TranscriptDocument: Codable, Hashable, Sendable {
 
     public mutating func append(_ newSegments: [TranscriptSegment]) {
         segments.append(contentsOf: newSegments)
-        segments = deduplicated(segments)
+        segments = TranscriptSegmentDeduplicator.deduplicate(segments)
         updatedAt = ISO8601DateFormatter().string(from: Date())
-    }
-
-    private func deduplicated(_ values: [TranscriptSegment]) -> [TranscriptSegment] {
-        var result: [TranscriptSegment] = []
-        for segment in values.sorted(by: { $0.startTimeSeconds < $1.startTimeSeconds }) {
-            let normalized = segment.text.normalizedTranscriptText
-            guard !normalized.isEmpty else {
-                continue
-            }
-            let isDuplicate = result.contains { existing in
-                existing.source == segment.source &&
-                    abs(existing.startTimeSeconds - segment.startTimeSeconds) < 1.5 &&
-                    existing.text.normalizedTranscriptText == normalized
-            }
-            if !isDuplicate {
-                result.append(segment)
-            }
-        }
-        return result
     }
 }
 
@@ -199,13 +217,5 @@ public struct AITranscriptContext: Hashable, Sendable {
     public init(text: String, fileName: String) {
         self.text = text
         self.fileName = fileName
-    }
-}
-
-private extension String {
-    var normalizedTranscriptText: String {
-        trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-            .lowercased()
     }
 }

@@ -37,6 +37,11 @@ struct AudioActivityDetector: Sendable {
         let rms = sqrt(sumSquares / Double(validSampleCount))
         return rms >= thresholds.minimumRMS || peak >= thresholds.minimumPeak
     }
+
+    static func containsSpeech(level: RecordingAudioLevel, source: RecordingAudioSource) -> Bool {
+        let thresholds = Thresholds(source: source)
+        return level.rms >= thresholds.minimumRMS || level.peak >= thresholds.minimumPeak
+    }
 }
 
 private struct Thresholds {

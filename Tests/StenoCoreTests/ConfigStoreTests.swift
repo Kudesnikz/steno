@@ -34,10 +34,36 @@ final class ConfigStoreTests: XCTestCase {
 
         XCTAssertFalse(result.didFindExistingConfig)
         XCTAssertEqual(result.config.modelName, AppConfig.default.modelName)
-        XCTAssertEqual(result.config.localTranscriptionModel, WhisperDefaults.defaultModelID)
-        XCTAssertEqual(result.config.localTranscriptionLanguage, WhisperDefaults.defaultLanguageCode)
-        XCTAssertEqual(result.config.localTranscriptionDefaultsRevision, WhisperDefaults.currentDefaultsRevision)
+        XCTAssertEqual(result.config.localTranscriptionModel, NativeSpeechDefaults.engineID)
+        XCTAssertEqual(result.config.localTranscriptionLanguage, NativeSpeechDefaults.defaultLanguageCode)
+        XCTAssertEqual(result.config.localTranscriptionDefaultsRevision, NativeSpeechDefaults.currentDefaultsRevision)
         XCTAssertEqual(result.config.agents.count, AppConfig.defaultAgents.count)
+    }
+
+    func testDecodesLegacyTranscriptionSettingsIntoNativeSpeechDefaults() throws {
+        let payload = """
+        {
+          "local_transcription_model": "ggml-small-q5_1",
+          "local_transcription_language": "ru",
+          "local_transcription_thread_count": 4,
+          "local_transcription_use_gpu": true
+        }
+        """
+
+        let config = try JSONDecoder().decode(AppConfig.self, from: try XCTUnwrap(payload.data(using: .utf8)))
+
+        XCTAssertEqual(config.localTranscriptionModel, NativeSpeechDefaults.engineID)
+        XCTAssertEqual(config.localTranscriptionLanguage, "ru-RU")
+        XCTAssertEqual(config.localTranscriptionThreadCount, 4)
+        XCTAssertTrue(config.localTranscriptionUseGPU)
+    }
+
+    func testNormalizesLegacyLanguageCodes() {
+        XCTAssertEqual(NativeSpeechDefaults.normalizedLanguageCode(""), "system")
+        XCTAssertEqual(NativeSpeechDefaults.normalizedLanguageCode("auto"), "system")
+        XCTAssertEqual(NativeSpeechDefaults.normalizedLanguageCode("ru"), "ru-RU")
+        XCTAssertEqual(NativeSpeechDefaults.normalizedLanguageCode("en"), "en-US")
+        XCTAssertEqual(NativeSpeechDefaults.normalizedLanguageCode("de_DE"), "de-DE")
     }
 
     func testVideoQualityEstimateUsesConfiguredBitrate() {

@@ -84,6 +84,8 @@ cat >"$INFO_PLIST" <<PLIST
   <true/>
   <key>NSMicrophoneUsageDescription</key>
   <string>Steno records microphone audio while recording meetings.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>Steno uses on-device speech recognition to transcribe meeting audio offline.</string>
   <key>NSScreenCaptureUsageDescription</key>
   <string>Steno records the screen to save meeting videos.</string>
   <key>NSSupportsAutomaticTermination</key>

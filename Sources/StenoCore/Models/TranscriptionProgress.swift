@@ -1,6 +1,6 @@
 import Foundation
 
-/// Current realtime Whisper backlog and finishing progress.
+/// Current realtime transcription backlog and finishing progress.
 public struct TranscriptionProgress: Equatable, Sendable {
     public var queuedWindowCount: Int
     public var activeWindowCount: Int

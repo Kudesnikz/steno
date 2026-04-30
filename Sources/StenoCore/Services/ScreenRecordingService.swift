@@ -28,7 +28,7 @@ public enum RecorderEvent: Sendable {
 
 public final class ScreenRecordingService: NSObject, @unchecked Sendable {
     public typealias EventHandler = @Sendable (RecorderEvent) -> Void
-    public typealias AudioHandler = @Sendable (RecordingAudioChunk) -> Void
+    public typealias AudioHandler = @Sendable (RecordingAudioBuffer) -> Void
 
     private enum Lifecycle {
         case idle
@@ -43,7 +43,6 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
     private var recordingOutput: SCRecordingOutput?
     private var eventHandler: EventHandler?
     private var audioHandler: AudioHandler?
-    private let audioConverter = AudioSampleBufferConverter()
     private var addedAudioOutputTypes: [SCStreamOutputType] = []
     private var audioStartPTS: CMTime?
     private var lifecycle: Lifecycle = .idle
@@ -372,13 +371,30 @@ extension ScreenRecordingService: SCStreamOutput {
             return
         }
 
-        do {
-            if let chunk = try audioConverter.convert(sampleBuffer: sampleBuffer, source: source, startTimeSeconds: startTimeSeconds) {
-                audioHandler(chunk)
-            }
-        } catch {
-            AppLog.warning("Audio sample conversion failed: \(error.localizedDescription)", category: .recording)
+        let duration = audioDuration(sampleBuffer: sampleBuffer)
+        let level = AudioSampleBufferLevelAnalyzer.level(for: sampleBuffer)
+        audioHandler(RecordingAudioBuffer(
+            source: source,
+            startTimeSeconds: startTimeSeconds,
+            durationSeconds: duration,
+            sampleBuffer: sampleBuffer,
+            level: level
+        ))
+    }
+
+    private func audioDuration(sampleBuffer: CMSampleBuffer) -> Double {
+        let duration = CMSampleBufferGetDuration(sampleBuffer)
+        if duration.isValid, duration.seconds.isFinite, duration.seconds > 0 {
+            return duration.seconds
         }
+        guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer) else {
+            return 0
+        }
+        let format = AVAudioFormat(cmAudioFormatDescription: formatDescription)
+        guard format.sampleRate > 0 else {
+            return 0
+        }
+        return Double(CMSampleBufferGetNumSamples(sampleBuffer)) / format.sampleRate
     }
 }
 
