@@ -2,7 +2,7 @@
 set -euo pipefail
 
 APP_NAME="${APP_NAME:-Steno}"
-APP_VERSION="${APP_VERSION:-0.2.0}"
+APP_VERSION="${APP_VERSION:-2.0.0}"
 DMG_NAME="${DMG_NAME:-${APP_NAME}-${APP_VERSION}-universal.dmg}"
 VOL_NAME="${VOL_NAME:-${APP_NAME}}"
 

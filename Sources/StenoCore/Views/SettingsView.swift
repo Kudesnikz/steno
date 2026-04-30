@@ -27,7 +27,7 @@ public struct SettingsView: View {
             Divider()
 
             HStack {
-                Link("Version 0.2.0-native", destination: AppLinks.repository)
+                Link("Version 2.0.0-native", destination: AppLinks.repository)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .help("Open Steno on GitHub")
