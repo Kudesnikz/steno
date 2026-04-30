@@ -82,9 +82,6 @@ private struct StatusBarBridgeView: View {
             .onAppear {
                 configureStatusBar()
             }
-            .onChange(of: snapshot) { _, newSnapshot in
-                appDelegate.statusBarController?.update(newSnapshot)
-            }
     }
 
     private func configureStatusBar() {
@@ -105,18 +102,6 @@ private struct StatusBarBridgeView: View {
             quitApplication: {
                 viewModel.quitApplication()
             }
-        )
-        controller.update(snapshot)
-    }
-
-    private var snapshot: StatusBarSnapshot {
-        StatusBarSnapshot(
-            isRecording: viewModel.isRecording,
-            isFinalizingRecording: viewModel.isFinalizingRecording,
-            isProcessing: viewModel.isProcessing,
-            showRecordingTime: viewModel.config.showRecordingTime,
-            recordingDuration: viewModel.recordingDuration,
-            transcriptionProgress: viewModel.transcriptionProgress
         )
     }
 }

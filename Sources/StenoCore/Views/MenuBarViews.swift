@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Observation
 
 /// Snapshot of app state that controls the menu bar status item presentation.
 public struct StatusBarSnapshot: Equatable, Sendable {
@@ -25,6 +26,18 @@ public struct StatusBarSnapshot: Equatable, Sendable {
         self.recordingDuration = recordingDuration
         self.transcriptionProgress = transcriptionProgress
     }
+
+    @MainActor
+    public init(viewModel: AppViewModel) {
+        self.init(
+            isRecording: viewModel.isRecording,
+            isFinalizingRecording: viewModel.isFinalizingRecording,
+            isProcessing: viewModel.isProcessing,
+            showRecordingTime: viewModel.config.showRecordingTime,
+            recordingDuration: viewModel.recordingDuration,
+            transcriptionProgress: viewModel.transcriptionProgress
+        )
+    }
 }
 
 /// Owns Steno's native macOS menu bar status item.
@@ -40,6 +53,7 @@ public final class StatusBarController: NSObject {
     private var showMainWindow: (() -> Void)?
     private var showSettings: (() -> Void)?
     private var quitApplication: (() -> Void)?
+    private var observationGeneration = 0
     private var snapshot = StatusBarSnapshot(
         isRecording: false,
         isFinalizingRecording: false,
@@ -70,7 +84,7 @@ public final class StatusBarController: NSObject {
         self.showMainWindow = showMainWindow
         self.showSettings = showSettings
         self.quitApplication = quitApplication
-        rebuildMenu()
+        observeViewModel()
     }
 
     /// Applies the latest app state to the status item image, title, tooltip, and menu.
@@ -96,6 +110,26 @@ public final class StatusBarController: NSObject {
         button.imagePosition = .imageOnly
         button.title = ""
         button.toolTip = "Steno"
+    }
+
+    private func observeViewModel() {
+        observationGeneration += 1
+        trackViewModelChanges(generation: observationGeneration)
+    }
+
+    private func trackViewModelChanges(generation: Int) {
+        guard generation == observationGeneration, let viewModel else {
+            return
+        }
+
+        let observedSnapshot = withObservationTracking {
+            StatusBarSnapshot(viewModel: viewModel)
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                self?.trackViewModelChanges(generation: generation)
+            }
+        }
+        update(observedSnapshot)
     }
 
     private func rebuildMenu() {

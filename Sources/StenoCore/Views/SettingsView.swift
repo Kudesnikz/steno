@@ -3,7 +3,6 @@ import SwiftUI
 
 public struct SettingsView: View {
     @Bindable private var viewModel: AppViewModel
-    @Environment(\.dismiss) private var dismiss
     @State private var selectedAgentID: String?
     @State private var selectedWhisperModelIDs = Set<String>()
     @State private var isConnectionStatusPopoverPresented = false
@@ -36,12 +35,10 @@ public struct SettingsView: View {
                 Spacer()
                 Button("Cancel") {
                     viewModel.showSettings = false
-                    dismiss()
                 }
                 Button("Save") {
                     viewModel.saveConfig()
                     viewModel.showSettings = false
-                    dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
             }
