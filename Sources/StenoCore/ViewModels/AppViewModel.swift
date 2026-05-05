@@ -97,6 +97,9 @@ public final class AppViewModel {
     public var availableSpeechLanguageOptions: [NativeSpeechLanguageOption] = []
     public var selectedSpeechLanguageStatus: NativeSpeechLanguageOption?
     public var isRefreshingSpeechLanguages = false
+    public var isCheckingTranscriptionReadiness = false
+    public var transcriptionSetupMessage: String?
+    public var transcriptionRequiresDictationSettings = false
     public var showOnboarding = false
     public var showSettings = false
     public var permissionState = PermissionState(hasScreenCapture: false, hasMicrophone: false)
@@ -108,6 +111,7 @@ public final class AppViewModel {
     @ObservationIgnored private let aiClient: AIProcessingClient
     @ObservationIgnored private let modelCatalogService: AIModelCatalogService
     @ObservationIgnored private let speechAvailabilityService: NativeSpeechAvailabilityService
+    @ObservationIgnored private let speechReadinessService: any NativeSpeechReadinessChecking
     @ObservationIgnored private var recorder: ScreenRecordingService?
     @ObservationIgnored private var transcriptionCoordinator: ContinuousSpeechCoordinator?
     @ObservationIgnored private var recordingTimerTask: Task<Void, Never>?
@@ -121,7 +125,8 @@ public final class AppViewModel {
         captureDisplayService: CaptureDisplayService = CaptureDisplayService(),
         aiClient: AIProcessingClient = AIProcessingClient(),
         modelCatalogService: AIModelCatalogService = AIModelCatalogService(),
-        speechAvailabilityService: NativeSpeechAvailabilityService = NativeSpeechAvailabilityService()
+        speechAvailabilityService: NativeSpeechAvailabilityService = NativeSpeechAvailabilityService(),
+        speechReadinessService: any NativeSpeechReadinessChecking = NativeSpeechService()
     ) {
         self.configStore = configStore
         self.permissionsService = permissionsService
@@ -129,6 +134,7 @@ public final class AppViewModel {
         self.aiClient = aiClient
         self.modelCatalogService = modelCatalogService
         self.speechAvailabilityService = speechAvailabilityService
+        self.speechReadinessService = speechReadinessService
 
         var loadedConfig = AppConfig.default
         var didFindExistingConfig = false
@@ -289,17 +295,7 @@ public final class AppViewModel {
     }
 
     public func saveConfig() {
-        normalizeConfig()
-        do {
-            try configStore.save(config)
-            sessionStore = SessionStore(saveDirectory: URL(fileURLWithPath: config.saveDirectory))
-            refreshSessions()
-            statusMessage = "Settings saved"
-            AppLog.info("Settings saved from UI", category: .config)
-        } catch {
-            errorMessage = "Settings save failed: \(error.localizedDescription)"
-            AppLog.error("Settings save failed: \(error.localizedDescription)", category: .config)
-        }
+        persistConfig(status: "Settings saved")
     }
 
     public func completeOnboarding(apiKey: String) {
@@ -380,7 +376,36 @@ public final class AppViewModel {
         config.localTranscriptionLanguage = NativeSpeechDefaults.normalizedLanguageCode(languageCode)
         Task {
             selectedSpeechLanguageStatus = await speechAvailabilityService.option(for: config)
+            await refreshLocalTranscriptionReadinessIfNeeded()
         }
+    }
+
+    public func setLocalTranscriptionEnabled(_ isEnabled: Bool) async {
+        guard isEnabled else {
+            config.localTranscriptionEnabled = false
+            config.attachTranscriptToAI = false
+            transcriptionSetupMessage = nil
+            transcriptionRequiresDictationSettings = false
+            persistConfig(status: "Local transcription disabled")
+            return
+        }
+
+        await validateLocalTranscriptionReadiness(
+            requestAuthorization: true,
+            enableOnSuccess: true,
+            disableOnFailure: true
+        )
+    }
+
+    public func refreshLocalTranscriptionReadinessIfNeeded() async {
+        guard config.localTranscriptionEnabled else {
+            return
+        }
+        await validateLocalTranscriptionReadiness(
+            requestAuthorization: false,
+            enableOnSuccess: false,
+            disableOnFailure: true
+        )
     }
 
     public func refreshSessions() {
@@ -444,6 +469,9 @@ public final class AppViewModel {
             showSettings = true
             AppLog.warning("Recording blocked because API key is missing", category: .recording)
             return
+        }
+        if config.localTranscriptionEnabled {
+            await refreshLocalTranscriptionReadinessIfNeeded()
         }
         await refreshCaptureDisplays()
 
@@ -886,6 +914,110 @@ public final class AppViewModel {
         config.localTranscriptionDefaultsRevision = NativeSpeechDefaults.currentDefaultsRevision
     }
 
+    private func persistConfig(status: String?) {
+        normalizeConfig()
+        do {
+            try configStore.save(config)
+            sessionStore = SessionStore(saveDirectory: URL(fileURLWithPath: config.saveDirectory))
+            refreshSessions()
+            if let status {
+                statusMessage = status
+            }
+            AppLog.info("Settings saved from UI", category: .config)
+        } catch {
+            errorMessage = "Settings save failed: \(error.localizedDescription)"
+            AppLog.error("Settings save failed: \(error.localizedDescription)", category: .config)
+        }
+    }
+
+    @discardableResult
+    private func validateLocalTranscriptionReadiness(
+        requestAuthorization: Bool,
+        enableOnSuccess: Bool,
+        disableOnFailure: Bool
+    ) async -> Bool {
+        guard !isCheckingTranscriptionReadiness else {
+            return config.localTranscriptionEnabled
+        }
+
+        isCheckingTranscriptionReadiness = true
+        defer {
+            isCheckingTranscriptionReadiness = false
+        }
+
+        if requestAuthorization {
+            let isGranted = await permissionsService.requestSpeechRecognitionAccess()
+            permissionState = permissionsService.currentState()
+            guard isGranted else {
+                applyLocalTranscriptionReadinessFailure(
+                    NativeSpeechTranscriptionError.authorizationDenied("denied or restricted"),
+                    disableOnFailure: disableOnFailure
+                )
+                return false
+            }
+        } else {
+            permissionState = permissionsService.currentState()
+            guard permissionState.hasSpeechRecognition else {
+                applyLocalTranscriptionReadinessFailure(
+                    NativeSpeechTranscriptionError.authorizationDenied("not authorized"),
+                    disableOnFailure: disableOnFailure
+                )
+                return false
+            }
+        }
+
+        do {
+            try await speechReadinessService.validateOfflineRecognitionReady(
+                languageCode: config.localTranscriptionLanguage
+            )
+            if enableOnSuccess {
+                config.localTranscriptionEnabled = true
+                persistConfig(status: "Local transcription enabled")
+            }
+            transcriptionSetupMessage = nil
+            transcriptionRequiresDictationSettings = false
+            AppLog.info("Local transcription readiness check passed", category: .recording)
+            return true
+        } catch {
+            applyLocalTranscriptionReadinessFailure(error, disableOnFailure: disableOnFailure)
+            return false
+        }
+    }
+
+    private func applyLocalTranscriptionReadinessFailure(_ error: any Error, disableOnFailure: Bool) {
+        if disableOnFailure {
+            config.localTranscriptionEnabled = false
+            config.attachTranscriptToAI = false
+            persistConfig(status: "Local transcription disabled")
+        }
+
+        let message = localTranscriptionSetupMessage(for: error)
+        transcriptionSetupMessage = message
+        transcriptionErrorMessage = message
+        transcriptionRequiresDictationSettings = localTranscriptionFailureRequiresDictationSettings(error)
+        AppLog.warning("Local transcription readiness check failed: \(error.localizedDescription)", category: .recording)
+    }
+
+    private func localTranscriptionSetupMessage(for error: any Error) -> String {
+        if case .dictationDisabled = error as? NativeSpeechTranscriptionError {
+            return "Нужно включить Dictation в macOS Keyboard Settings для транскрибации. Steno будет использовать только on-device recognition."
+        }
+        if case .authorizationDenied = error as? NativeSpeechTranscriptionError {
+            return "Разрешите Speech Recognition для Steno, чтобы включить локальную транскрибацию."
+        }
+        if case .offlineRecognitionUnavailable = error as? NativeSpeechTranscriptionError {
+            return "Установите выбранный язык диктовки в macOS, чтобы использовать оффлайн-транскрибацию."
+        }
+        return error.localizedDescription
+    }
+
+    private func localTranscriptionFailureRequiresDictationSettings(_ error: any Error) -> Bool {
+        if let nativeError = error as? NativeSpeechTranscriptionError {
+            return nativeError.requiresDictationSettings
+        }
+        return NativeSpeechTranscriptionError.isDictationDisabled(error)
+    }
+
     private func normalizeCaptureDisplaySelection(shouldPersist: Bool) {
         guard let display = CaptureDisplaySelection.selectedDisplay(
             configuredID: config.videoDeviceIndex,
@@ -963,6 +1095,9 @@ public final class AppViewModel {
         transcriptionErrorMessage = error.localizedDescription
         isTranscribing = false
         transcriptionProgress = .idle
+        if localTranscriptionFailureRequiresDictationSettings(error) {
+            applyLocalTranscriptionReadinessFailure(error, disableOnFailure: true)
+        }
         AppLog.warning("Transcription failed: \(error.localizedDescription)", category: .recording)
     }
 
@@ -976,6 +1111,9 @@ public final class AppViewModel {
                     try await coordinator.accept(chunk)
                 } catch {
                     await MainActor.run {
+                        guard self?.isTranscribing == true else {
+                            return
+                        }
                         self?.handleTranscriptionError(error)
                     }
                 }

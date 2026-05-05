@@ -50,6 +50,33 @@ final class NativeSpeechAvailabilityTests: XCTestCase {
         XCTAssertFalse(option.isSupported)
         XCTAssertFalse(option.isOfflineAvailable)
     }
+
+    func testClassifiesDictationDisabledRecognitionError() {
+        let error = NSError(
+            domain: "kAFAssistantErrorDomain",
+            code: 1101,
+            userInfo: [NSLocalizedDescriptionKey: "Siri and Dictation are disabled"]
+        )
+
+        let mapped = NativeSpeechTranscriptionError.recognitionFailure(for: error)
+
+        guard case .dictationDisabled = mapped else {
+            XCTFail("Expected dictationDisabled, got \(mapped)")
+            return
+        }
+        XCTAssertTrue(mapped.requiresDictationSettings)
+    }
+
+    func testTreatsNoSpeechAsSuccessfulEmptyAudioPreflight() {
+        let error = NSError(
+            domain: "kAFAssistantErrorDomain",
+            code: 1110,
+            userInfo: [NSLocalizedDescriptionKey: "No speech detected"]
+        )
+
+        XCTAssertTrue(NativeSpeechTranscriptionError.isExpectedEmptyAudioPreflightError(error))
+        XCTAssertFalse(NativeSpeechTranscriptionError.isDictationDisabled(error))
+    }
 }
 
 private struct FakeSpeechStatusProvider: NativeSpeechRecognizerStatusProviding {

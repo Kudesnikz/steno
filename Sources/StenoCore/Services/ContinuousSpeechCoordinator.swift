@@ -3,21 +3,71 @@ import Foundation
 
 public enum NativeSpeechTranscriptionError: LocalizedError, Sendable {
     case authorizationDenied(String)
+    case dictationDisabled
     case recognizerUnavailable(String)
     case offlineRecognitionUnavailable(String)
     case recognitionFailed(String)
+    case recognitionValidationTimedOut
 
     public var errorDescription: String? {
         switch self {
         case let .authorizationDenied(status):
             "Speech Recognition permission is required for offline transcription. Current status: \(status)."
+        case .dictationDisabled:
+            "Siri and Dictation are disabled. Enable Dictation in macOS Keyboard settings to use offline transcription."
         case let .recognizerUnavailable(language):
             "Apple Speech is unavailable for \(language)."
         case let .offlineRecognitionUnavailable(language):
             "Offline Apple Speech recognition is not available for \(language). Install the dictation language in macOS Settings."
         case let .recognitionFailed(message):
             "Apple Speech recognition failed: \(message)"
+        case .recognitionValidationTimedOut:
+            "Apple Speech readiness check timed out."
         }
+    }
+
+    var requiresDictationSettings: Bool {
+        switch self {
+        case .dictationDisabled, .offlineRecognitionUnavailable:
+            true
+        case .authorizationDenied, .recognizerUnavailable, .recognitionFailed, .recognitionValidationTimedOut:
+            false
+        }
+    }
+
+    static func recognitionFailure(for error: any Error) -> NativeSpeechTranscriptionError {
+        if isDictationDisabled(error) {
+            return .dictationDisabled
+        }
+        return .recognitionFailed(error.localizedDescription)
+    }
+
+    static func recognitionFailure(message: String) -> NativeSpeechTranscriptionError {
+        if isDictationDisabledMessage(message) {
+            return .dictationDisabled
+        }
+        return .recognitionFailed(message)
+    }
+
+    static func isDictationDisabled(_ error: any Error) -> Bool {
+        isDictationDisabledMessage(error.localizedDescription)
+    }
+
+    static func isExpectedEmptyAudioPreflightError(_ error: any Error) -> Bool {
+        let message = error.localizedDescription.lowercased()
+        return message.contains("no speech") ||
+            message.contains("no utterance") ||
+            message.contains("audio is empty") ||
+            message.contains("recognition request was canceled")
+    }
+
+    private static func isDictationDisabledMessage(_ message: String) -> Bool {
+        let normalized = message.lowercased()
+        let mentionsDictation = normalized.contains("dictation") || normalized.contains("диктов")
+        let mentionsDisabled = normalized.contains("disabled") ||
+            normalized.contains("отключ") ||
+            normalized.contains("выключ")
+        return mentionsDictation && mentionsDisabled
     }
 }
 
@@ -263,7 +313,7 @@ public actor ContinuousSpeechCoordinator {
         if let errorDescription, snapshot == nil {
             AppLog.warning("Apple Speech task error: \(errorDescription)", category: .recording)
             if !isFinishing {
-                pendingError = NativeSpeechTranscriptionError.recognitionFailed(errorDescription)
+                pendingError = NativeSpeechTranscriptionError.recognitionFailure(message: errorDescription)
             }
             return
         }

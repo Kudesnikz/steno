@@ -302,7 +302,10 @@ public struct SettingsView: View {
     private var transcriptionTab: some View {
         Form {
             Section("Local Transcription") {
-                Toggle("Локальная транскрибация Apple Speech", isOn: $viewModel.config.localTranscriptionEnabled)
+                Toggle("Локальная транскрибация Apple Speech", isOn: localTranscriptionEnabledBinding)
+                    .disabled(viewModel.isCheckingTranscriptionReadiness)
+                transcriptionReadinessStatus
+
                 Toggle("Передавать транскрипт в AI", isOn: $viewModel.config.attachTranscriptToAI)
                     .disabled(!viewModel.config.localTranscriptionEnabled)
 
@@ -320,7 +323,10 @@ public struct SettingsView: View {
 
                 HStack {
                     Button {
-                        Task { await viewModel.refreshSpeechLanguageOptions() }
+                        Task {
+                            await viewModel.refreshSpeechLanguageOptions()
+                            await viewModel.refreshLocalTranscriptionReadinessIfNeeded()
+                        }
                     } label: {
                         if viewModel.isRefreshingSpeechLanguages {
                             ProgressView()
@@ -342,6 +348,49 @@ public struct SettingsView: View {
         .formStyle(.grouped)
         .task {
             await viewModel.refreshSpeechLanguageOptions()
+            await viewModel.refreshLocalTranscriptionReadinessIfNeeded()
+        }
+    }
+
+    private var localTranscriptionEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.config.localTranscriptionEnabled },
+            set: { isEnabled in
+                Task {
+                    await viewModel.setLocalTranscriptionEnabled(isEnabled)
+                }
+            }
+        )
+    }
+
+    @ViewBuilder
+    private var transcriptionReadinessStatus: some View {
+        if viewModel.isCheckingTranscriptionReadiness {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Проверка Dictation для оффлайн-транскрибации...")
+                    .foregroundStyle(.secondary)
+            }
+        } else if let message = viewModel.transcriptionSetupMessage {
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if viewModel.transcriptionRequiresDictationSettings {
+                HStack {
+                    Button {
+                        viewModel.openDictationSettings()
+                    } label: {
+                        Label("Open Dictation Settings", systemImage: "keyboard")
+                    }
+
+                    Text("Включите Dictation для транскрибации; Steno продолжит использовать только on-device recognition.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
     }
 
