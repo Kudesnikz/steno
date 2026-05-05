@@ -54,7 +54,11 @@ public enum NativeSpeechTranscriptionError: LocalizedError, Sendable {
     }
 
     static func isExpectedEmptyAudioPreflightError(_ error: any Error) -> Bool {
-        let message = error.localizedDescription.lowercased()
+        isRecoverableEmptySpeechError(message: error.localizedDescription)
+    }
+
+    static func isRecoverableEmptySpeechError(message: String) -> Bool {
+        let message = message.lowercased()
         return message.contains("no speech") ||
             message.contains("no utterance") ||
             message.contains("audio is empty") ||
@@ -195,6 +199,12 @@ public actor ContinuousSpeechCoordinator {
             throw pendingError
         }
 
+        let existingSession = sessions[buffer.source]
+        let hasSpeechActivity = AudioActivityDetector.containsSpeech(level: buffer.level, source: buffer.source)
+        guard existingSession != nil || hasSpeechActivity else {
+            return
+        }
+
         rememberRecentBuffer(buffer)
         var session = try activeSession(for: buffer.source, initialStartTime: buffer.startTimeSeconds)
         if shouldRotate(session: session, nextBuffer: buffer) {
@@ -305,13 +315,22 @@ public actor ContinuousSpeechCoordinator {
         recentBuffers[buffer.source] = buffers
     }
 
-    fileprivate func handleRecognition(snapshot: NativeSpeechRecognitionSnapshot?, errorDescription: String?) {
+    fileprivate func handleRecognition(
+        snapshot: NativeSpeechRecognitionSnapshot?,
+        errorDescription: String?,
+        source: RecordingAudioSource,
+        sessionID: String
+    ) {
         guard !didReturnFinalDocument else {
             return
         }
 
         if let errorDescription, snapshot == nil {
             AppLog.warning("Apple Speech task error: \(errorDescription)", category: .recording)
+            if NativeSpeechTranscriptionError.isRecoverableEmptySpeechError(message: errorDescription) {
+                discardRecoverableSession(source: source, sessionID: sessionID, reason: errorDescription)
+                return
+            }
             if !isFinishing {
                 pendingError = NativeSpeechTranscriptionError.recognitionFailure(message: errorDescription)
             }
@@ -327,6 +346,19 @@ public actor ContinuousSpeechCoordinator {
         } else {
             publishPartialSegments(snapshot.segments, source: snapshot.source)
         }
+    }
+
+    private func discardRecoverableSession(source: RecordingAudioSource, sessionID: String, reason: String) {
+        guard sessions[source]?.id == sessionID else {
+            return
+        }
+        sessions.removeValue(forKey: source)
+        recentBuffers[source] = []
+        AppLog.info(
+            "Apple Speech session ended without transcript source=\(source.rawValue) id=\(sessionID) reason=\(reason)",
+            category: .recording
+        )
+        reportProgress(force: true)
     }
 
     private func publishPartialSegments(_ segments: [TranscriptSegment], source: RecordingAudioSource) {
@@ -464,7 +496,12 @@ private final class NativeSpeechRecognitionBridge: @unchecked Sendable {
                 guard let coordinator else {
                     return
                 }
-                await coordinator.handleRecognition(snapshot: snapshot, errorDescription: errorDescription)
+                await coordinator.handleRecognition(
+                    snapshot: snapshot,
+                    errorDescription: errorDescription,
+                    source: source,
+                    sessionID: sessionID
+                )
             }
         }
     }

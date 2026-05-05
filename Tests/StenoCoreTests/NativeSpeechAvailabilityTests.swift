@@ -77,6 +77,12 @@ final class NativeSpeechAvailabilityTests: XCTestCase {
         XCTAssertTrue(NativeSpeechTranscriptionError.isExpectedEmptyAudioPreflightError(error))
         XCTAssertFalse(NativeSpeechTranscriptionError.isDictationDisabled(error))
     }
+
+    func testTreatsNoSpeechAsRecoverableLiveRecognitionError() {
+        XCTAssertTrue(NativeSpeechTranscriptionError.isRecoverableEmptySpeechError(message: "No speech detected"))
+        XCTAssertTrue(NativeSpeechTranscriptionError.isRecoverableEmptySpeechError(message: "No utterance detected"))
+        XCTAssertFalse(NativeSpeechTranscriptionError.isRecoverableEmptySpeechError(message: "Siri and Dictation are disabled"))
+    }
 }
 
 private struct FakeSpeechStatusProvider: NativeSpeechRecognizerStatusProviding {
