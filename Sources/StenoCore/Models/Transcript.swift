@@ -1,4 +1,4 @@
-import CoreMedia
+import AVFoundation
 import Foundation
 
 public enum RecordingAudioSource: String, Codable, Hashable, Sendable {
@@ -43,20 +43,20 @@ public struct RecordingAudioBuffer: @unchecked Sendable {
     public var source: RecordingAudioSource
     public var startTimeSeconds: Double
     public var durationSeconds: Double
-    public var sampleBuffer: CMSampleBuffer
+    public var pcmBuffer: AVAudioPCMBuffer
     public var level: RecordingAudioLevel
 
     public init(
         source: RecordingAudioSource,
         startTimeSeconds: Double,
         durationSeconds: Double,
-        sampleBuffer: CMSampleBuffer,
+        pcmBuffer: AVAudioPCMBuffer,
         level: RecordingAudioLevel = RecordingAudioLevel()
     ) {
         self.source = source
         self.startTimeSeconds = startTimeSeconds
         self.durationSeconds = durationSeconds
-        self.sampleBuffer = sampleBuffer
+        self.pcmBuffer = pcmBuffer
         self.level = level
     }
 

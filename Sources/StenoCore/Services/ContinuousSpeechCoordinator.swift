@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 @preconcurrency import Speech
 
@@ -472,6 +473,7 @@ private final class NativeSpeechSession: @unchecked Sendable {
 private final class NativeSpeechRecognitionBridge: @unchecked Sendable {
     private let request: SFSpeechAudioBufferRecognitionRequest
     private let task: SFSpeechRecognitionTask
+    private let converter = NativeSpeechPCMBufferConverter()
 
     init(
         recognizer: SFSpeechRecognizer,
@@ -507,7 +509,12 @@ private final class NativeSpeechRecognitionBridge: @unchecked Sendable {
     }
 
     func append(_ buffer: RecordingAudioBuffer) {
-        request.appendAudioSampleBuffer(buffer.sampleBuffer)
+        do {
+            let speechBuffer = try converter.convert(buffer.pcmBuffer, to: request.nativeAudioFormat)
+            request.append(speechBuffer)
+        } catch {
+            AppLog.warning("Skipping audio buffer that could not be converted for Apple Speech: \(error.localizedDescription)", category: .recording)
+        }
     }
 
     func endAudio() {
@@ -516,6 +523,86 @@ private final class NativeSpeechRecognitionBridge: @unchecked Sendable {
 
     deinit {
         task.cancel()
+    }
+}
+
+private final class NativeSpeechPCMBufferConverter: @unchecked Sendable {
+    private var converter: AVAudioConverter?
+    private var inputFormat: AVAudioFormat?
+    private var outputFormat: AVAudioFormat?
+
+    func convert(_ inputBuffer: AVAudioPCMBuffer, to targetFormat: AVAudioFormat) throws -> AVAudioPCMBuffer {
+        guard inputBuffer.format != targetFormat else {
+            return inputBuffer
+        }
+
+        if converter == nil || inputFormat != inputBuffer.format || outputFormat != targetFormat {
+            guard let newConverter = AVAudioConverter(from: inputBuffer.format, to: targetFormat) else {
+                throw AudioSampleConversionError.converterCreationFailed
+            }
+            newConverter.sampleRateConverterQuality = AVAudioQuality.medium.rawValue
+            converter = newConverter
+            inputFormat = inputBuffer.format
+            outputFormat = targetFormat
+        }
+
+        guard let converter else {
+            throw AudioSampleConversionError.converterCreationFailed
+        }
+
+        let outputCapacity = convertedFrameCapacity(
+            inputFrameLength: inputBuffer.frameLength,
+            inputSampleRate: inputBuffer.format.sampleRate,
+            outputSampleRate: targetFormat.sampleRate
+        )
+        guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outputCapacity) else {
+            throw AudioSampleConversionError.bufferAllocationFailed
+        }
+
+        let inputProvider = NativeSpeechConverterInputProvider(buffer: inputBuffer)
+        var conversionError: NSError?
+        let status = converter.convert(to: outputBuffer, error: &conversionError) { _, outputStatus in
+            inputProvider.provide(outputStatus: outputStatus)
+        }
+
+        if status == .error {
+            throw AudioSampleConversionError.conversionFailed(conversionError?.localizedDescription ?? "Unknown converter error")
+        }
+        guard outputBuffer.frameLength > 0 else {
+            throw AudioSampleConversionError.conversionFailed("Converted audio buffer is empty")
+        }
+        return outputBuffer
+    }
+
+    private func convertedFrameCapacity(
+        inputFrameLength: AVAudioFrameCount,
+        inputSampleRate: Double,
+        outputSampleRate: Double
+    ) -> AVAudioFrameCount {
+        guard inputSampleRate > 0, outputSampleRate > 0 else {
+            return inputFrameLength
+        }
+        let ratio = outputSampleRate / inputSampleRate
+        return AVAudioFrameCount((Double(inputFrameLength) * ratio).rounded(.up)) + 64
+    }
+}
+
+private final class NativeSpeechConverterInputProvider: @unchecked Sendable {
+    private let buffer: AVAudioPCMBuffer
+    private var didProvideInput = false
+
+    init(buffer: AVAudioPCMBuffer) {
+        self.buffer = buffer
+    }
+
+    func provide(outputStatus: UnsafeMutablePointer<AVAudioConverterInputStatus>) -> AVAudioBuffer? {
+        guard !didProvideInput else {
+            outputStatus.pointee = .noDataNow
+            return nil
+        }
+        didProvideInput = true
+        outputStatus.pointee = .haveData
+        return buffer
     }
 }
 

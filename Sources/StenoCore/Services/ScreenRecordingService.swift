@@ -373,13 +373,44 @@ extension ScreenRecordingService: SCStreamOutput {
 
         let duration = audioDuration(sampleBuffer: sampleBuffer)
         let level = AudioSampleBufferLevelAnalyzer.level(for: sampleBuffer)
+        guard let pcmBuffer = copyPCMBuffer(from: sampleBuffer) else {
+            AppLog.warning("Skipping audio buffer that could not be copied for transcription", category: .recording)
+            return
+        }
         audioHandler(RecordingAudioBuffer(
             source: source,
             startTimeSeconds: startTimeSeconds,
             durationSeconds: duration,
-            sampleBuffer: sampleBuffer,
+            pcmBuffer: pcmBuffer,
             level: level
         ))
+    }
+
+    private func copyPCMBuffer(from sampleBuffer: CMSampleBuffer) -> AVAudioPCMBuffer? {
+        guard CMSampleBufferDataIsReady(sampleBuffer),
+              let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer) else {
+            return nil
+        }
+
+        let format = AVAudioFormat(cmAudioFormatDescription: formatDescription)
+        let frameCount = AVAudioFrameCount(CMSampleBufferGetNumSamples(sampleBuffer))
+        guard frameCount > 0,
+              let pcmBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+            return nil
+        }
+        pcmBuffer.frameLength = frameCount
+
+        let status = CMSampleBufferCopyPCMDataIntoAudioBufferList(
+            sampleBuffer,
+            at: 0,
+            frameCount: Int32(frameCount),
+            into: pcmBuffer.mutableAudioBufferList
+        )
+        guard status == noErr else {
+            AppLog.warning("Failed to copy audio PCM buffer for transcription status=\(status)", category: .recording)
+            return nil
+        }
+        return pcmBuffer
     }
 
     private func audioDuration(sampleBuffer: CMSampleBuffer) -> Double {
