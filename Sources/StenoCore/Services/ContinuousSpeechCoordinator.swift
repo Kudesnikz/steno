@@ -704,7 +704,7 @@ fileprivate struct NativeSpeechRecognitionSnapshot: Sendable {
         self.source = source
         self.sessionID = sessionID
         isFinal = result.isFinal
-        segments = result.bestTranscription.segments.enumerated().compactMap { index, segment in
+        let tokenSegments: [TranscriptSegment] = result.bestTranscription.segments.enumerated().compactMap { index, segment in
             let text = segment.substring.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else {
                 return nil
@@ -719,5 +719,6 @@ fileprivate struct NativeSpeechRecognitionSnapshot: Sendable {
                 text: text
             )
         }
+        segments = TranscriptPhraseSegmenter.phrases(from: tokenSegments)
     }
 }
