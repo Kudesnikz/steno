@@ -43,6 +43,8 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
     private var recordingOutput: SCRecordingOutput?
     private var eventHandler: EventHandler?
     private var audioHandler: AudioHandler?
+    private var audioSidecarWriter: RecordingAudioSidecarWriter?
+    private var completedAudioSidecars: RecordingAudioSidecars?
     private var addedAudioOutputTypes: [SCStreamOutputType] = []
     private var audioStartPTS: CMTime?
     private var systemVolume = 1.0
@@ -68,6 +70,8 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
         setLifecycle(.starting)
         self.eventHandler = eventHandler
         self.audioHandler = audioHandler
+        self.completedAudioSidecars = nil
+        self.audioSidecarWriter = RecordingAudioSidecarWriter(outputURL: outputURL)
         self.systemVolume = Self.sanitizedVolume(systemVolume, range: 0...2)
         self.microphoneVolume = Self.sanitizedVolume(microphoneVolume, range: 0...4)
         AppLog.info(
@@ -121,9 +125,7 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
             throw RecordingError.failedToAddRecordingOutput(error.localizedDescription)
         }
 
-        if audioHandler != nil {
-            addAudioOutputs(to: stream)
-        }
+        addAudioOutputs(to: stream)
 
         self.stream = stream
         self.recordingOutput = recordingOutput
@@ -172,10 +174,18 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
         }
 
         removeAudioOutputs(from: stream)
+        completedAudioSidecars = audioSidecarWriter?.finish()
+        audioSidecarWriter = nil
 
         AppLog.info("Recording stopped", category: .recording)
         emitTerminalEventIfNeeded(.didFinish)
         resetAfterStop()
+    }
+
+    public func takeCompletedAudioSidecars() -> RecordingAudioSidecars? {
+        let sidecars = completedAudioSidecars
+        completedAudioSidecars = nil
+        return sidecars
     }
 
     private func startCapture(_ stream: SCStream) async throws {
@@ -246,6 +256,8 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
         recordingOutput = nil
         eventHandler = nil
         audioHandler = nil
+        audioSidecarWriter?.discard()
+        audioSidecarWriter = nil
         addedAudioOutputTypes = []
     }
 
@@ -359,7 +371,7 @@ extension ScreenRecordingService: SCStreamDelegate {
 
 extension ScreenRecordingService: SCStreamOutput {
     public func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard let audioHandler else {
+        guard audioHandler != nil || audioSidecarWriter != nil else {
             return
         }
 
@@ -386,7 +398,8 @@ extension ScreenRecordingService: SCStreamOutput {
         let gain = volumeMultiplier(for: source)
         applyGain(gain, to: pcmBuffer)
         let level = RecordingAudioLevel(rms: rawLevel.rms * gain, peak: rawLevel.peak * gain)
-        audioHandler(RecordingAudioBuffer(
+        audioSidecarWriter?.append(pcmBuffer, source: source, startTimeSeconds: startTimeSeconds)
+        audioHandler?(RecordingAudioBuffer(
             source: source,
             startTimeSeconds: startTimeSeconds,
             durationSeconds: duration,
@@ -507,6 +520,141 @@ extension ScreenRecordingService: SCStreamOutput {
             return range.lowerBound
         }
         return min(max(value, range.lowerBound), range.upperBound)
+    }
+}
+
+private final class RecordingAudioSidecarWriter: @unchecked Sendable {
+    private struct SourceState {
+        var url: URL
+        var file: AVAudioFile
+        var format: AVAudioFormat
+        var firstStartTimeSeconds: Double
+        var frameCount: AVAudioFramePosition
+    }
+
+    private let lock = NSLock()
+    private let fileManager: FileManager
+    private let directory: URL
+    private let baseName: String
+    private var states: [RecordingAudioSource: SourceState] = [:]
+    private var isFinished = false
+
+    init(outputURL: URL, fileManager: FileManager = .default) {
+        self.fileManager = fileManager
+        directory = fileManager.temporaryDirectory.appending(
+            path: "steno-audio-\(UUID().uuidString)",
+            directoryHint: .isDirectory
+        )
+        baseName = outputURL.deletingPathExtension().lastPathComponent
+    }
+
+    func append(_ buffer: AVAudioPCMBuffer, source: RecordingAudioSource, startTimeSeconds: Double) {
+        lock.withLock {
+            guard !isFinished else {
+                return
+            }
+
+            do {
+                var state = try state(for: source, buffer: buffer, startTimeSeconds: startTimeSeconds)
+                guard Self.format(state.format, matches: buffer.format) else {
+                    AppLog.warning(
+                        "Skipping \(source.rawValue) sidecar audio with changed format old=\(Self.describe(state.format)) new=\(Self.describe(buffer.format))",
+                        category: .recording
+                    )
+                    return
+                }
+                try state.file.write(from: buffer)
+                state.frameCount += AVAudioFramePosition(buffer.frameLength)
+                states[source] = state
+            } catch {
+                AppLog.warning("Failed to write \(source.rawValue) sidecar audio: \(error.localizedDescription)", category: .recording)
+            }
+        }
+    }
+
+    func finish() -> RecordingAudioSidecars? {
+        lock.withLock {
+            isFinished = true
+            let sidecars = RecordingAudioSidecars(
+                system: sidecarFile(for: .system),
+                microphone: sidecarFile(for: .microphone),
+                temporaryDirectory: directory
+            )
+            states = [:]
+            guard sidecars.hasAudio else {
+                try? fileManager.removeItem(at: directory)
+                return nil
+            }
+            AppLog.info(
+                "Finished normalized audio sidecars system=\(sidecars.system?.url.lastPathComponent ?? "none") microphone=\(sidecars.microphone?.url.lastPathComponent ?? "none")",
+                category: .recording
+            )
+            return sidecars
+        }
+    }
+
+    func discard() {
+        lock.withLock {
+            isFinished = true
+            states = [:]
+            try? fileManager.removeItem(at: directory)
+        }
+    }
+
+    private func state(
+        for source: RecordingAudioSource,
+        buffer: AVAudioPCMBuffer,
+        startTimeSeconds: Double
+    ) throws -> SourceState {
+        if let state = states[source] {
+            return state
+        }
+
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appending(path: "\(baseName)_\(source.rawValue).caf")
+        try? fileManager.removeItem(at: url)
+        let file = try AVAudioFile(
+            forWriting: url,
+            settings: buffer.format.settings,
+            commonFormat: buffer.format.commonFormat,
+            interleaved: buffer.format.isInterleaved
+        )
+        AppLog.info(
+            "Started normalized \(source.rawValue) audio sidecar format=\(Self.describe(buffer.format))",
+            category: .recording
+        )
+        return SourceState(
+            url: url,
+            file: file,
+            format: buffer.format,
+            firstStartTimeSeconds: max(0, startTimeSeconds),
+            frameCount: 0
+        )
+    }
+
+    private func sidecarFile(for source: RecordingAudioSource) -> RecordingAudioSidecarFile? {
+        guard let state = states[source],
+              state.frameCount > 0,
+              fileManager.fileExists(atPath: state.url.path) else {
+            return nil
+        }
+
+        return RecordingAudioSidecarFile(
+            url: state.url,
+            startOffsetSeconds: state.firstStartTimeSeconds,
+            durationSeconds: Double(state.frameCount) / state.format.sampleRate
+        )
+    }
+
+    private static func format(_ lhs: AVAudioFormat, matches rhs: AVAudioFormat) -> Bool {
+        lhs.commonFormat == rhs.commonFormat &&
+            lhs.sampleRate == rhs.sampleRate &&
+            lhs.channelCount == rhs.channelCount &&
+            lhs.isInterleaved == rhs.isInterleaved
+    }
+
+    private static func describe(_ format: AVAudioFormat) -> String {
+        "\(Int(format.sampleRate))Hz \(format.channelCount)ch \(format.commonFormat) interleaved=\(format.isInterleaved)"
     }
 }
 
