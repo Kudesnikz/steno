@@ -86,7 +86,7 @@ Steno в ветке `native_ui` мигрирован на нативный **Swi
 *   [`Sources/StenoCore/Views/`](Sources/StenoCore/Views/) — SwiftUI views.
 *   [`Sources/StenoCore/Support/`](Sources/StenoCore/Support/) — logging, paths, formatters.
 *   [`Tests/StenoCoreTests/`](Tests/StenoCoreTests/) — XCTest.
-*   [`bin/`](bin/) — bundled `ffmpeg` / `deep-filter` binaries.
+*   [`bin/`](bin/) — bundled `ffmpeg` binaries for AI media preparation.
 *   [`assets/`](assets/) — app icon и template-иконки строки меню.
 
 ### Сборка и запуск
