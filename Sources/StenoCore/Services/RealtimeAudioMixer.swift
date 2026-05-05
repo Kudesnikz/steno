@@ -29,10 +29,12 @@ final class RealtimeAudioMixer: @unchecked Sendable {
     private let chunkFrameCount = 2_048
     private let latencyFrames: Int64
     private let maxSourceLagFrames: Int64
+    private let jitterToleranceFrames: Int64
 
     private var converterStates: [RecordingAudioSource: ConverterState] = [:]
     private var segments: [RecordingAudioSource: [SourceSegment]] = [:]
     private var latestFrameBySource: [RecordingAudioSource: Int64] = [:]
+    private var nextFrameBySource: [RecordingAudioSource: Int64] = [:]
     private var renderCursorFrame: Int64 = 0
     private var didRender = false
     private var lastDiagnosticFrame: Int64 = -1
@@ -48,18 +50,21 @@ final class RealtimeAudioMixer: @unchecked Sendable {
         )!
         latencyFrames = Int64((sampleRate * 0.20).rounded())
         maxSourceLagFrames = Int64((sampleRate * 0.80).rounded())
+        jitterToleranceFrames = Int64((sampleRate * 0.05).rounded())
     }
 
     func append(
         _ buffer: AVAudioPCMBuffer,
         source: RecordingAudioSource,
-        startTimeSeconds: Double
+        startTimeSeconds: Double,
+        gain: Double
     ) -> [MixedRecordingAudioBuffer] {
         lock.withLock {
             do {
                 let converted = try convert(buffer, source: source)
-                let startFrame = max(0, Int64((startTimeSeconds * outputSampleRate).rounded()))
-                store(converted, source: source, startFrame: startFrame)
+                let timestampFrame = max(0, Int64((startTimeSeconds * outputSampleRate).rounded()))
+                let startFrame = continuousStartFrame(source: source, timestampFrame: timestampFrame)
+                store(converted, source: source, startFrame: startFrame, gain: gain)
                 return renderAvailable(force: false)
             } catch {
                 AppLog.warning("Skipping \(source.rawValue) audio mix buffer: \(error.localizedDescription)", category: .recording)
@@ -110,7 +115,24 @@ final class RealtimeAudioMixer: @unchecked Sendable {
         return outputBuffer
     }
 
-    private func store(_ buffer: AVAudioPCMBuffer, source: RecordingAudioSource, startFrame: Int64) {
+    private func continuousStartFrame(source: RecordingAudioSource, timestampFrame: Int64) -> Int64 {
+        guard let nextFrame = nextFrameBySource[source] else {
+            return timestampFrame
+        }
+
+        let delta = timestampFrame - nextFrame
+        guard abs(delta) > jitterToleranceFrames else {
+            return nextFrame
+        }
+
+        AppLog.warning(
+            "Realtime audio \(source.rawValue) discontinuity deltaFrames=\(delta) timestamp=\(timestampFrame) expected=\(nextFrame)",
+            category: .recording
+        )
+        return timestampFrame
+    }
+
+    private func store(_ buffer: AVAudioPCMBuffer, source: RecordingAudioSource, startFrame: Int64, gain: Double) {
         guard buffer.frameLength > 0,
               let channelData = buffer.floatChannelData else {
             return
@@ -119,12 +141,15 @@ final class RealtimeAudioMixer: @unchecked Sendable {
         let frameCount = Int(buffer.frameLength)
         let leftPointer = channelData[0]
         let rightPointer = outputChannelCount > 1 ? channelData[1] : channelData[0]
-        let left = Array(UnsafeBufferPointer(start: leftPointer, count: frameCount))
-        let right = Array(UnsafeBufferPointer(start: rightPointer, count: frameCount))
+        let gain = Float(max(0, gain.isFinite ? gain : 1))
+        let left = UnsafeBufferPointer(start: leftPointer, count: frameCount).map { $0 * gain }
+        let right = UnsafeBufferPointer(start: rightPointer, count: frameCount).map { $0 * gain }
         var sourceSegments = segments[source] ?? []
         sourceSegments.append(SourceSegment(startFrame: startFrame, left: left, right: right))
         segments[source] = sourceSegments
-        latestFrameBySource[source] = max(latestFrameBySource[source] ?? 0, startFrame + Int64(frameCount))
+        let endFrame = startFrame + Int64(frameCount)
+        latestFrameBySource[source] = max(latestFrameBySource[source] ?? 0, endFrame)
+        nextFrameBySource[source] = endFrame
     }
 
     private func renderAvailable(force: Bool) -> [MixedRecordingAudioBuffer] {

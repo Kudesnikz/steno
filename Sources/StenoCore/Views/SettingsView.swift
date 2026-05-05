@@ -143,8 +143,6 @@ public struct SettingsView: View {
             }
 
             Section("Audio") {
-                Toggle("Эхоподавление (legacy ffmpeg pipeline)", isOn: $viewModel.config.echoCancellationEnabled)
-                Toggle("Шумоподавление DeepFilterNet (legacy binary)", isOn: $viewModel.config.noiseReductionEnabled)
                 LabeledContent("System Volume") {
                     HStack {
                         Slider(value: $viewModel.config.systemVolume, in: 0...2)

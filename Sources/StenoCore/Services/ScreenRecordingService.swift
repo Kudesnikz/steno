@@ -371,11 +371,16 @@ extension ScreenRecordingService: SCStreamOutput {
             return
         }
         let gain = volumeMultiplier(for: source)
-        applyGain(gain, to: pcmBuffer)
         let level = RecordingAudioLevel(rms: rawLevel.rms * gain, peak: rawLevel.peak * gain)
-        for mixedBuffer in audioMixer?.append(pcmBuffer, source: source, startTimeSeconds: startTimeSeconds) ?? [] {
+        for mixedBuffer in audioMixer?.append(
+            pcmBuffer,
+            source: source,
+            startTimeSeconds: startTimeSeconds,
+            gain: gain
+        ) ?? [] {
             appendMixedAudio(mixedBuffer)
         }
+        applyGain(gain, to: pcmBuffer)
         audioHandler?(RecordingAudioBuffer(
             source: source,
             startTimeSeconds: startTimeSeconds,
