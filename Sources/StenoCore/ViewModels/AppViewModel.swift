@@ -90,13 +90,6 @@ public final class AppViewModel {
     public var availableAIModels: [AIModelReference] = AIModelCatalog.fallbackModels
     public var availableCaptureDisplays: [CaptureDisplay] = []
     public var isRefreshingAIModels = false
-    public var isTranscribing = false
-    public var liveTranscriptDocument: TranscriptDocument?
-    public var transcriptionErrorMessage: String?
-    public var transcriptionProgress: TranscriptionProgress = .idle
-    public var availableSpeechLanguageOptions: [NativeSpeechLanguageOption] = []
-    public var selectedSpeechLanguageStatus: NativeSpeechLanguageOption?
-    public var isRefreshingSpeechLanguages = false
     public var showOnboarding = false
     public var showSettings = false
     public var permissionState = PermissionState(hasScreenCapture: false, hasMicrophone: false)
@@ -107,9 +100,7 @@ public final class AppViewModel {
     @ObservationIgnored private let captureDisplayService: CaptureDisplayService
     @ObservationIgnored private let aiClient: AIProcessingClient
     @ObservationIgnored private let modelCatalogService: AIModelCatalogService
-    @ObservationIgnored private let speechAvailabilityService: NativeSpeechAvailabilityService
     @ObservationIgnored private var recorder: ScreenRecordingService?
-    @ObservationIgnored private var transcriptionCoordinator: ContinuousSpeechCoordinator?
     @ObservationIgnored private var recordingTimerTask: Task<Void, Never>?
     @ObservationIgnored private var aiTask: Task<Void, Never>?
     @ObservationIgnored private var currentRecordingBaseName: String?
@@ -120,15 +111,13 @@ public final class AppViewModel {
         permissionsService: PermissionsService = PermissionsService(),
         captureDisplayService: CaptureDisplayService = CaptureDisplayService(),
         aiClient: AIProcessingClient = AIProcessingClient(),
-        modelCatalogService: AIModelCatalogService = AIModelCatalogService(),
-        speechAvailabilityService: NativeSpeechAvailabilityService = NativeSpeechAvailabilityService()
+        modelCatalogService: AIModelCatalogService = AIModelCatalogService()
     ) {
         self.configStore = configStore
         self.permissionsService = permissionsService
         self.captureDisplayService = captureDisplayService
         self.aiClient = aiClient
         self.modelCatalogService = modelCatalogService
-        self.speechAvailabilityService = speechAvailabilityService
 
         var loadedConfig = AppConfig.default
         var didFindExistingConfig = false
@@ -138,13 +127,9 @@ public final class AppViewModel {
         do {
             let loadResult = try configStore.load()
             loadedConfig = loadResult.config
-            let didMigrateTranscriptionDefaults = Self.migrateTranscriptionDefaultsIfNeeded(&loadedConfig)
             didFindExistingConfig = loadResult.didFindExistingConfig
             if loadResult.didMigrateLegacyConfig {
                 initialStatus = "Legacy config migrated to ~/.steno/config.json"
-            }
-            if didMigrateTranscriptionDefaults {
-                try? configStore.save(loadedConfig)
             }
         } catch {
             loadedConfig = .default
@@ -169,9 +154,6 @@ public final class AppViewModel {
         }
         Task {
             await refreshAIModels()
-        }
-        Task {
-            await refreshSpeechLanguageOptions()
         }
         AppLog.info("AppViewModel initialized; onboarding=\(showOnboarding)", category: .app)
     }
@@ -204,14 +186,6 @@ public final class AppViewModel {
         return isRecording ? "Stop Recording" : "Start Recording"
     }
 
-    public var shouldShowTranscriptionLagIndicator: Bool {
-        isRecording && transcriptionProgress.hasRealtimeBacklog
-    }
-
-    public var shouldShowFinishingTranscriptionProgress: Bool {
-        isFinalizingRecording && transcriptionProgress.isFinishing && transcriptionProgress.remainingWindowCount > 0
-    }
-
     public static func requiresSetup(
         config: AppConfig,
         didFindExistingConfig: Bool,
@@ -224,8 +198,7 @@ public final class AppViewModel {
 
     public static func hasRequiredPermissions(config: AppConfig, permissionState: PermissionState) -> Bool {
         permissionState.hasScreenCapture &&
-            permissionState.hasMicrophone &&
-            (!config.localTranscriptionEnabled || permissionState.hasSpeechRecognition)
+            permissionState.hasMicrophone
     }
 
     public func refreshPermissions() {
@@ -234,7 +207,7 @@ public final class AppViewModel {
             showOnboarding = true
         }
         AppLog.info(
-            "Refreshed permissions screen=\(permissionState.hasScreenCapture) microphone=\(permissionState.hasMicrophone) speech=\(permissionState.hasSpeechRecognition)",
+            "Refreshed permissions screen=\(permissionState.hasScreenCapture) microphone=\(permissionState.hasMicrophone)",
             category: .permissions
         )
     }
@@ -265,7 +238,6 @@ public final class AppViewModel {
         permissionsService.requestScreenCaptureAccess()
         Task {
             _ = await permissionsService.requestMicrophoneAccess()
-            _ = await permissionsService.requestSpeechRecognitionAccess()
             await MainActor.run {
                 self.refreshPermissions()
             }
@@ -278,14 +250,6 @@ public final class AppViewModel {
 
     public func openMicrophoneSettings() {
         permissionsService.openMicrophoneSettings()
-    }
-
-    public func openSpeechRecognitionSettings() {
-        permissionsService.openSpeechRecognitionSettings()
-    }
-
-    public func openDictationSettings() {
-        permissionsService.openDictationSettings()
     }
 
     public func saveConfig() {
@@ -365,24 +329,6 @@ public final class AppViewModel {
         return models
     }
 
-    public func refreshSpeechLanguageOptions() async {
-        guard !isRefreshingSpeechLanguages else {
-            return
-        }
-        isRefreshingSpeechLanguages = true
-        let options = await speechAvailabilityService.options()
-        availableSpeechLanguageOptions = options
-        selectedSpeechLanguageStatus = await speechAvailabilityService.option(for: config)
-        isRefreshingSpeechLanguages = false
-    }
-
-    public func selectTranscriptionLanguage(_ languageCode: String) {
-        config.localTranscriptionLanguage = NativeSpeechDefaults.normalizedLanguageCode(languageCode)
-        Task {
-            selectedSpeechLanguageStatus = await speechAvailabilityService.option(for: config)
-        }
-    }
-
     public func refreshSessions() {
         sessions = sessionStore.scanSessions()
         if selectedSessionID == nil || !sessions.contains(where: { $0.id == selectedSessionID }) {
@@ -434,7 +380,7 @@ public final class AppViewModel {
             statusMessage = "Recording blocked by macOS permissions"
             showOnboarding = true
             AppLog.warning(
-                "Recording blocked by permissions screen=\(permissionState.hasScreenCapture) microphone=\(permissionState.hasMicrophone) speech=\(permissionState.hasSpeechRecognition)",
+                "Recording blocked by permissions screen=\(permissionState.hasScreenCapture) microphone=\(permissionState.hasMicrophone)",
                 category: .recording
             )
             return
@@ -462,61 +408,21 @@ public final class AppViewModel {
             currentRecordingBaseName = baseName
             currentRecordingURL = outputURL
             recordingDuration = 0
-            liveTranscriptDocument = nil
-            transcriptionErrorMessage = nil
-            transcriptionProgress = .idle
-            if config.localTranscriptionEnabled {
-                let coordinator = ContinuousSpeechCoordinator(
-                    baseName: baseName,
-                    saveDirectory: saveURL,
-                    config: config,
-                    onUpdate: { [weak self] document in
-                        Task { @MainActor in
-                            self?.liveTranscriptDocument = document
-                        }
-                    },
-                    onProgress: { [weak self] progress in
-                        Task { @MainActor in
-                            self?.transcriptionProgress = progress
-                        }
-                    }
-                )
-                try await coordinator.prepare()
-                transcriptionCoordinator = coordinator
-                isTranscribing = true
-                liveTranscriptDocument = TranscriptDocument(
-                    baseName: baseName,
-                    modelName: NativeSpeechDefaults.engineDisplayName,
-                    language: NativeSpeechDefaults.normalizedLanguageCode(config.localTranscriptionLanguage)
-                )
-            }
             AppLog.info(
                 "Recording requested baseName=\(baseName) displayID=\(config.videoDeviceIndex) displayName=\(config.videoDeviceName)",
                 category: .recording
             )
 
-            let audioHandler = makeAudioHandler(coordinator: transcriptionCoordinator)
-
             try await recorder.start(
                 outputURL: outputURL,
                 preset: config.preset(),
-                selectedDisplayID: config.videoDeviceIndex,
-                audioHandler: audioHandler
+                selectedDisplayID: config.videoDeviceIndex
             ) { [weak self] event in
                 Task { @MainActor in
                     self?.handleRecorderEvent(event)
                 }
             }
             try sessionStore.createInitialMetadata(baseName: baseName, displayName: timestamp.replacingOccurrences(of: "_", with: " "), createdAt: timestamp)
-            if config.localTranscriptionEnabled {
-                try sessionStore.updateTranscriptionMetadata(
-                    baseName: baseName,
-                    status: .running,
-                    modelName: NativeSpeechDefaults.engineDisplayName,
-                    language: NativeSpeechDefaults.normalizedLanguageCode(config.localTranscriptionLanguage),
-                    segmentCount: 0
-                )
-            }
             isRecording = true
             statusMessage = "Recording started"
             startRecordingTimer()
@@ -528,10 +434,6 @@ public final class AppViewModel {
             }
             isRecording = false
             recorder = nil
-            transcriptionCoordinator = nil
-            isTranscribing = false
-            liveTranscriptDocument = nil
-            transcriptionProgress = .idle
             try? FileManager.default.removeItem(at: outputURL)
             currentRecordingBaseName = nil
             currentRecordingURL = nil
@@ -555,30 +457,6 @@ public final class AppViewModel {
             try await recorder?.stop()
             if let baseName = currentRecordingBaseName, let url = currentRecordingURL {
                 if await recordedFileExists(url) {
-                    if let transcriptionCoordinator {
-                        do {
-                            let transcript = try await transcriptionCoordinator.finish()
-                            liveTranscriptDocument = transcript
-                            try sessionStore.updateTranscriptionMetadata(
-                                baseName: baseName,
-                                status: .completed,
-                                modelName: transcript.modelName,
-                                language: transcript.language,
-                                segmentCount: transcript.segments.count
-                            )
-                            AppLog.info("Transcription completed for \(baseName), segments=\(transcript.segments.count)", category: .recording)
-                        } catch {
-                            handleTranscriptionError(error)
-                            try? sessionStore.updateTranscriptionMetadata(
-                                baseName: baseName,
-                                status: .failed,
-                                modelName: NativeSpeechDefaults.engineDisplayName,
-                                language: NativeSpeechDefaults.normalizedLanguageCode(config.localTranscriptionLanguage),
-                                segmentCount: liveTranscriptDocument?.segments.count ?? 0,
-                                error: String(error.localizedDescription.prefix(200))
-                            )
-                        }
-                    }
                     try sessionStore.updateRecordingMetadata(
                         baseName: baseName,
                         duration: recordingDuration,
@@ -599,10 +477,7 @@ public final class AppViewModel {
         }
 
         recorder = nil
-        transcriptionCoordinator = nil
-        isTranscribing = false
         isFinalizingRecording = false
-        transcriptionProgress = .idle
         currentRecordingBaseName = nil
         currentRecordingURL = nil
         refreshSessions()
@@ -732,7 +607,6 @@ public final class AppViewModel {
                 let result = try await self.aiClient.generateReport(
                     videoURL: session.videoURL,
                     audioURLs: session.audioURLs,
-                    transcript: self.transcriptContext(for: session, config: snapshotConfig),
                     config: snapshotConfig,
                     agent: agent,
                     progress: progress
@@ -813,30 +687,6 @@ public final class AppViewModel {
         return (try? sessionStore.loadReportText(url: url)) ?? ""
     }
 
-    public func transcriptDocument(for session: MeetingSession) -> TranscriptDocument? {
-        if liveTranscriptDocument?.baseName == session.baseName {
-            return liveTranscriptDocument
-        }
-        guard let url = session.transcriptURL else {
-            return nil
-        }
-        return try? sessionStore.loadTranscript(url: url)
-    }
-
-    public func loadTranscriptMarkdown(for session: MeetingSession) -> String {
-        if let liveTranscriptDocument, liveTranscriptDocument.baseName == session.baseName {
-            return liveTranscriptDocument.timestampedMarkdown
-        }
-        if let url = session.transcriptMarkdownURL,
-           let text = try? sessionStore.loadTranscriptMarkdown(url: url) {
-            return text
-        }
-        if let document = transcriptDocument(for: session) {
-            return document.timestampedMarkdown
-        }
-        return ""
-    }
-
     public func copyReport(agentID: String) {
         let text = loadReportText(agentID: agentID)
         NSPasteboard.general.clearContents()
@@ -848,20 +698,6 @@ public final class AppViewModel {
     public func openOutputFolder() {
         NSWorkspace.shared.open(URL(fileURLWithPath: config.saveDirectory))
         AppLog.info("Opened output folder", category: .ui)
-    }
-
-    private static func migrateTranscriptionDefaultsIfNeeded(_ config: inout AppConfig) -> Bool {
-        let previousRevision = config.localTranscriptionDefaultsRevision
-        guard previousRevision < NativeSpeechDefaults.currentDefaultsRevision else {
-            return false
-        }
-
-        config.localTranscriptionModel = NativeSpeechDefaults.engineID
-        config.localTranscriptionLanguage = NativeSpeechDefaults.normalizedLanguageCode(config.localTranscriptionLanguage)
-        config.localTranscriptionThreadCount = 1
-        config.localTranscriptionUseGPU = false
-        config.localTranscriptionDefaultsRevision = NativeSpeechDefaults.currentDefaultsRevision
-        return true
     }
 
     private func normalizeConfig() {
@@ -878,12 +714,7 @@ public final class AppViewModel {
         if !config.agents.contains(where: { $0.id == config.activeAgentID }) {
             config.activeAgentID = config.agents.first?.id ?? "default"
         }
-        config.localTranscriptionModel = NativeSpeechDefaults.engineID
-        config.localTranscriptionThreadCount = 1
-        config.localTranscriptionUseGPU = false
-        config.localTranscriptionLanguage = NativeSpeechDefaults.normalizedLanguageCode(config.localTranscriptionLanguage)
         normalizeCaptureDisplaySelection(shouldPersist: false)
-        config.localTranscriptionDefaultsRevision = NativeSpeechDefaults.currentDefaultsRevision
     }
 
     private func normalizeCaptureDisplaySelection(shouldPersist: Bool) {
@@ -948,54 +779,11 @@ public final class AppViewModel {
                 try? sessionStore.deleteArtifacts(baseName: baseName)
             }
             recorder = nil
-            transcriptionCoordinator = nil
-            isTranscribing = false
-            liveTranscriptDocument = nil
-            transcriptionProgress = .idle
             currentRecordingBaseName = nil
             currentRecordingURL = nil
             refreshSessions()
             AppLog.error("Recorder event didFail: \(message)", category: .recording)
         }
-    }
-
-    private func handleTranscriptionError(_ error: any Error) {
-        transcriptionErrorMessage = error.localizedDescription
-        isTranscribing = false
-        transcriptionProgress = .idle
-        AppLog.warning("Transcription failed: \(error.localizedDescription)", category: .recording)
-    }
-
-    private func makeAudioHandler(coordinator: ContinuousSpeechCoordinator?) -> ScreenRecordingService.AudioHandler? {
-        guard let coordinator else {
-            return nil
-        }
-        return { [weak self] chunk in
-            Task {
-                do {
-                    try await coordinator.accept(chunk)
-                } catch {
-                    await MainActor.run {
-                        self?.handleTranscriptionError(error)
-                    }
-                }
-            }
-        }
-    }
-
-    private func transcriptContext(for session: MeetingSession, config: AppConfig) -> AITranscriptContext? {
-        guard config.attachTranscriptToAI else {
-            return nil
-        }
-
-        let text = loadTranscriptMarkdown(for: session).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else {
-            return nil
-        }
-        return AITranscriptContext(
-            text: text,
-            fileName: session.transcriptMarkdownURL?.lastPathComponent ?? "\(session.baseName)_transcript.md"
-        )
     }
 
     private func missingPermissionNames() -> String {
@@ -1005,9 +793,6 @@ public final class AppViewModel {
         }
         if !permissionState.hasMicrophone {
             names.append("Microphone")
-        }
-        if config.localTranscriptionEnabled, !permissionState.hasSpeechRecognition {
-            names.append("Speech Recognition")
         }
         return names.joined(separator: ", ")
     }

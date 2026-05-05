@@ -117,7 +117,7 @@ public enum AIMediaLimits {
                 fileName: url.lastPathComponent,
                 sizeBytes: size,
                 maxBytes: limitBytes,
-                recommendation: "Use Gemini file upload, lower the recording quality, or generate from transcript/audio."
+                recommendation: "Use Gemini file upload or lower the recording quality."
             )
         }
     }

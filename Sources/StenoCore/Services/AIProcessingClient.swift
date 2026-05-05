@@ -96,7 +96,6 @@ public actor AIProcessingClient {
     public func generateReport(
         videoURL: URL,
         audioURLs: [URL],
-        transcript: AITranscriptContext?,
         config: AppConfig,
         agent: Agent,
         progress: AIProgressHandler? = nil
@@ -118,7 +117,6 @@ public actor AIProcessingClient {
             return try await geminiClient.generateReport(
                 videoURL: preparedMedia.videoURL,
                 audioURLs: audioURLs,
-                transcript: transcript,
                 config: config,
                 agent: agent,
                 progress: progress
@@ -126,7 +124,6 @@ public actor AIProcessingClient {
         case .kimi, .qwen, .openRouter:
             return try await openAICompatibleClient.generateReport(
                 videoURL: preparedMedia.videoURL,
-                transcript: transcript,
                 config: config,
                 model: model,
                 agent: agent,
@@ -135,7 +132,6 @@ public actor AIProcessingClient {
         case .amazonBedrock:
             return try await bedrockClient.generateReport(
                 videoURL: preparedMedia.videoURL,
-                transcript: transcript,
                 config: config,
                 model: model,
                 agent: agent,

@@ -7,8 +7,7 @@
 * **Modern UI:** Rebuilt the interface from scratch using SwiftUI and the latest Apple design patterns.
 * **Performance:** Massive reduction in CPU and memory footprint compared to the previous Python-based versions.
 
-### Transcription & AI
-* **Apple Speech Integration:** Migrated transcription to Apple's native `SFSpeechRecognizer`, providing robust, on-device recognition with zero latency.
+### AI
 * **Modular AI Providers:** Added support for multiple AI backends, including Google Gemini, AWS Bedrock, and OpenAI-compatible APIs (local LLMs, etc.).
 * **Smart Reports:** Improved Markdown report generation with support for multiple AI "Agents" (custom prompts).
 * **AI Connection Health:** Real-time connectivity check for AI providers directly in Settings.

@@ -35,10 +35,6 @@ public struct SessionStore {
                 builder.videoURL = url
             } else if fileName == "\(baseName).json" {
                 builder.metadataURL = url
-            } else if fileName == "\(baseName)_transcript.json" {
-                builder.transcriptURL = url
-            } else if fileName == "\(baseName)_transcript.md" {
-                builder.transcriptMarkdownURL = url
             } else if fileName == "\(baseName)_protocol.txt" {
                 builder.reportURLsByAgentID["default"] = url
             } else if let agentID = fileName.firstMatch(pattern: protocolPattern) {
@@ -61,8 +57,6 @@ public struct SessionStore {
                 baseURL: saveDirectory.appending(path: builder.baseName),
                 videoURL: videoURL,
                 metadataURL: metadataURL,
-                transcriptURL: builder.transcriptURL,
-                transcriptMarkdownURL: builder.transcriptMarkdownURL,
                 audioURLs: builder.audioURLs.sorted { $0.lastPathComponent < $1.lastPathComponent },
                 reportURLsByAgentID: builder.reportURLsByAgentID,
                 metadata: metadata,
@@ -119,29 +113,6 @@ public struct SessionStore {
         AppLog.info("Updated recording metadata for \(baseName)", category: .sessions)
     }
 
-    public func updateTranscriptionMetadata(
-        baseName: String,
-        status: TranscriptionStatus,
-        modelName: String,
-        language: String,
-        segmentCount: Int,
-        error: String? = nil
-    ) throws {
-        let metadataURL = saveDirectory.appending(path: "\(baseName).json")
-        var metadata = loadMetadata(url: metadataURL)
-        metadata.transcription = TranscriptionInfo(
-            status: status,
-            modelName: modelName,
-            language: language,
-            transcriptPath: "\(baseName)_transcript.json",
-            markdownPath: "\(baseName)_transcript.md",
-            segmentCount: segmentCount,
-            error: error
-        )
-        try saveMetadata(metadata, to: metadataURL)
-        AppLog.info("Updated transcription metadata for \(baseName), status=\(status.rawValue)", category: .sessions)
-    }
-
     public func appendReportMetadata(baseName: String, report: ReportInfo) throws {
         let metadataURL = saveDirectory.appending(path: "\(baseName).json")
         var metadata = loadMetadata(url: metadataURL)
@@ -177,23 +148,6 @@ public struct SessionStore {
         return url
     }
 
-    public func loadTranscript(url: URL) throws -> TranscriptDocument {
-        let data = try Data(contentsOf: url)
-        return try JSONDecoder().decode(TranscriptDocument.self, from: data)
-    }
-
-    public func loadTranscriptMarkdown(url: URL) throws -> String {
-        try String(contentsOf: url, encoding: .utf8)
-    }
-
-    public func saveTranscript(_ transcript: TranscriptDocument, baseName: String) throws -> (jsonURL: URL, markdownURL: URL) {
-        let jsonURL = saveDirectory.appending(path: "\(baseName)_transcript.json")
-        let markdownURL = saveDirectory.appending(path: "\(baseName)_transcript.md")
-        try saveTranscriptDocument(transcript, jsonURL: jsonURL, markdownURL: markdownURL)
-        AppLog.info("Saved transcript for \(baseName), segments=\(transcript.segments.count)", category: .sessions)
-        return (jsonURL, markdownURL)
-    }
-
     private func loadMetadata(url: URL) -> SessionMetadata {
         guard fileManager.fileExists(atPath: url.path),
               let data = try? Data(contentsOf: url),
@@ -211,14 +165,6 @@ public struct SessionStore {
         try data.write(to: url, options: .atomic)
     }
 
-    private func saveTranscriptDocument(_ transcript: TranscriptDocument, jsonURL: URL, markdownURL: URL) throws {
-        try fileManager.createDirectory(at: jsonURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        let data = try encoder.encode(transcript)
-        try data.write(to: jsonURL, options: .atomic)
-        try transcript.timestampedMarkdown.write(to: markdownURL, atomically: true, encoding: .utf8)
-    }
 }
 
 private struct SessionBuilder {
@@ -226,8 +172,6 @@ private struct SessionBuilder {
     var directory: URL
     var videoURL: URL?
     var metadataURL: URL?
-    var transcriptURL: URL?
-    var transcriptMarkdownURL: URL?
     var audioURLs: [URL] = []
     var reportURLsByAgentID: [String: URL] = [:]
 }

@@ -69,14 +69,7 @@ public struct ContentView: View {
                 .frame(width: 580, height: 560)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ZStack {
-                mainApplicationContent(topInset: topInset)
-
-                if viewModel.shouldShowFinishingTranscriptionProgress {
-                    FinalizingTranscriptionOverlay(progress: viewModel.transcriptionProgress)
-                        .transition(.opacity)
-                }
-            }
+            mainApplicationContent(topInset: topInset)
         }
     }
 
@@ -334,10 +327,6 @@ private struct SidebarStatusRow: View {
                     .foregroundStyle(.secondary)
             }
 
-            if viewModel.shouldShowTranscriptionLagIndicator {
-                TranscriptionLagIndicator(progress: viewModel.transcriptionProgress)
-            }
-
             Label {
                 Text("Tokens: \(viewModel.config.usedTokens / 1000)k total")
                     .foregroundStyle(.secondary)
@@ -353,70 +342,6 @@ private struct SidebarStatusRow: View {
                 .padding(.leading, 26)
                 .lineLimit(1)
         }
-    }
-}
-
-private struct TranscriptionLagIndicator: View {
-    var progress: TranscriptionProgress
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 6) {
-            ProgressView()
-                .controlSize(.small)
-            Text("Транскрибация запаздывает: \(progress.remainingWindowCount) фрагм. · буфер \(bufferedDuration)")
-                .font(.caption)
-                .foregroundStyle(.orange)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(8)
-        .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private var bufferedDuration: String {
-        StenoFormatters.duration(Int(progress.bufferedAudioSeconds.rounded()))
-    }
-}
-
-private struct FinalizingTranscriptionOverlay: View {
-    var progress: TranscriptionProgress
-
-    var body: some View {
-        ZStack {
-            Rectangle()
-                .fill(.ultraThinMaterial)
-                .ignoresSafeArea()
-
-            VStack(spacing: 12) {
-                Image(systemName: "waveform")
-                    .font(.system(size: 26, weight: .semibold))
-                    .foregroundStyle(.secondary)
-
-                Text("Завершение обработки аудио")
-                    .font(.headline)
-
-                Text("Осталось фрагментов: \(progress.remainingWindowCount) · буфер \(bufferedDuration)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if let fraction = progress.finishingCompletionFraction {
-                    ProgressView(value: fraction, total: 1)
-                } else {
-                    ProgressView()
-                }
-            }
-            .padding(20)
-            .frame(width: 360)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-            .shadow(radius: 20, y: 8)
-        }
-    }
-
-    private var bufferedDuration: String {
-        StenoFormatters.duration(Int(progress.bufferedAudioSeconds.rounded()))
     }
 }
 
@@ -487,7 +412,6 @@ private struct DetailView: View {
                         Text(agentName(agentID)).tag("report:\(agentID)")
                     }
                     Text("Player").tag("player")
-                    Text("Transcript").tag("transcript")
                     Text("Info").tag("info")
                 }
                 .labelsHidden()
@@ -497,8 +421,6 @@ private struct DetailView: View {
                 switch viewModel.selectedTabID {
                 case "player":
                     PlayerPane(session: session)
-                case "transcript":
-                    TranscriptPane(viewModel: viewModel, session: session)
                 case "info":
                     InfoPane(session: session)
                 default:
@@ -537,103 +459,6 @@ private struct SidebarActionIconButton: View {
         .foregroundStyle(role == .destructive ? .red : .secondary)
         .opacity(0.55)
         .help(help)
-    }
-}
-
-private struct TranscriptPane: View {
-    @Bindable var viewModel: AppViewModel
-    var session: MeetingSession
-    @State private var searchText = ""
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                let transcriptDocument = viewModel.transcriptDocument(for: session)
-
-                if viewModel.isTranscribing, viewModel.liveTranscriptDocument?.baseName == session.baseName {
-                    Label("Transcribing", systemImage: "waveform")
-                        .foregroundStyle(.secondary)
-                }
-                if let error = viewModel.transcriptionErrorMessage, viewModel.liveTranscriptDocument?.baseName == session.baseName {
-                    Label(error, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
-                        .lineLimit(1)
-                }
-                Spacer()
-                if let transcriptDocument, !transcriptDocument.sortedSegments.isEmpty {
-                    TextField("Search transcript", text: $searchText)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 220)
-                }
-                Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(viewModel.loadTranscriptMarkdown(for: session), forType: .string)
-                    viewModel.statusMessage = "Transcript copied"
-                } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
-                }
-                .disabled(viewModel.loadTranscriptMarkdown(for: session).isEmpty)
-            }
-            .padding(.horizontal)
-            .padding(.bottom, 8)
-
-            if let document = viewModel.transcriptDocument(for: session), !document.sortedSegments.isEmpty {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 10) {
-                        ForEach(filteredSegments(document.sortedSegments)) { segment in
-                            TranscriptSegmentRow(segment: segment)
-                        }
-                    }
-                    .frame(maxWidth: 860, alignment: .leading)
-                    .padding(.horizontal, 36)
-                    .padding(.vertical, 24)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ContentUnavailableView(
-                    "Transcript Unavailable",
-                    systemImage: "text.bubble",
-                    description: Text(viewModel.config.localTranscriptionEnabled ? "Transcript will appear while recording audio is processed." : "Local transcription is disabled in Settings.")
-                )
-            }
-        }
-    }
-
-    private func filteredSegments(_ segments: [TranscriptSegment]) -> [TranscriptSegment] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else {
-            return segments
-        }
-        return segments.filter { $0.text.localizedCaseInsensitiveContains(query) }
-    }
-}
-
-private struct TranscriptSegmentRow: View {
-    var segment: TranscriptSegment
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(timestamp)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                Text(segment.source.displayName)
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
-            }
-            .frame(width: 120, alignment: .leading)
-
-            Text(segment.text)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(.vertical, 4)
-    }
-
-    private var timestamp: String {
-        let start = StenoFormatters.duration(Int(segment.startTimeSeconds.rounded(.down)))
-        let end = StenoFormatters.duration(Int(segment.endTimeSeconds.rounded(.up)))
-        return "\(start)-\(end)"
     }
 }
 
@@ -892,19 +717,6 @@ private struct InfoPane: View {
                     }
                 }
 
-                if let transcription = session.metadata.transcription {
-                    InfoSection(title: "Transcription") {
-                        InfoRow(label: "Status", value: transcription.status.rawValue)
-                        InfoRow(label: "Model", value: transcription.modelName)
-                        InfoRow(label: "Language", value: transcription.language)
-                        InfoRow(label: "Segments", value: "\(transcription.segmentCount)")
-                        InfoRow(label: "Transcript", value: transcription.markdownPath)
-                        if let error = transcription.error {
-                            InfoRow(label: "Error", value: error)
-                        }
-                    }
-                }
-
                 if let reports = session.metadata.reports, !reports.isEmpty {
                     InfoSection(title: "AI Reports") {
                         ForEach(reports) { report in
@@ -924,7 +736,7 @@ private struct InfoPane: View {
                     }
                 }
 
-                if session.metadata.recording == nil && session.metadata.transcription == nil && (session.metadata.reports ?? []).isEmpty {
+                if session.metadata.recording == nil && (session.metadata.reports ?? []).isEmpty {
                     ContentUnavailableView("No Metadata", systemImage: "info.circle")
                 }
             }
@@ -1010,8 +822,6 @@ private extension AppViewModel {
             baseURL: baseURL,
             videoURL: baseURL.appendingPathExtension("mp4"),
             metadataURL: baseURL.appendingPathExtension("json"),
-            transcriptURL: baseURL.appendingPathExtension("srt"),
-            transcriptMarkdownURL: baseURL.appendingPathExtension("md"),
             audioURLs: [],
             reportURLsByAgentID: [:],
             metadata: SessionMetadata(

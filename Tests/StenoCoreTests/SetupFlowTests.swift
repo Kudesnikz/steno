@@ -29,11 +29,6 @@ final class SetupFlowTests: XCTestCase {
             didFindExistingConfig: true,
             permissionState: PermissionState(hasScreenCapture: true, hasMicrophone: false)
         ))
-        XCTAssertTrue(AppViewModel.requiresSetup(
-            config: config,
-            didFindExistingConfig: true,
-            permissionState: PermissionState(hasScreenCapture: true, hasMicrophone: true, hasSpeechRecognition: false)
-        ))
     }
 
     func testRequiresSetupWhenSelectedProviderCredentialsAreMissing() {

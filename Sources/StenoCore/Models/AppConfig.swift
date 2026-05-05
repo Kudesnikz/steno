@@ -75,13 +75,6 @@ public struct AppConfig: Codable, Hashable, Sendable {
     public var microphoneVolume: Double
     public var echoCancellationEnabled: Bool
     public var noiseReductionEnabled: Bool
-    public var localTranscriptionEnabled: Bool
-    public var attachTranscriptToAI: Bool
-    public var localTranscriptionModel: String
-    public var localTranscriptionLanguage: String
-    public var localTranscriptionThreadCount: Int
-    public var localTranscriptionUseGPU: Bool
-    public var localTranscriptionDefaultsRevision: Int
     public var activeAgentID: String
     public var agents: [Agent]
 
@@ -115,13 +108,6 @@ public struct AppConfig: Codable, Hashable, Sendable {
         case microphoneVolume = "mic_volume"
         case echoCancellationEnabled = "echo_cancellation_enabled"
         case noiseReductionEnabled = "noise_reduction_enabled"
-        case localTranscriptionEnabled = "local_transcription_enabled"
-        case attachTranscriptToAI = "attach_transcript_to_ai"
-        case localTranscriptionModel = "local_transcription_model"
-        case localTranscriptionLanguage = "local_transcription_language"
-        case localTranscriptionThreadCount = "local_transcription_thread_count"
-        case localTranscriptionUseGPU = "local_transcription_use_gpu"
-        case localTranscriptionDefaultsRevision = "local_transcription_defaults_revision"
         case activeAgentID = "active_agent_id"
         case agents
     }
@@ -156,13 +142,6 @@ public struct AppConfig: Codable, Hashable, Sendable {
         microphoneVolume: Double,
         echoCancellationEnabled: Bool,
         noiseReductionEnabled: Bool,
-        localTranscriptionEnabled: Bool,
-        attachTranscriptToAI: Bool,
-        localTranscriptionModel: String,
-        localTranscriptionLanguage: String,
-        localTranscriptionThreadCount: Int,
-        localTranscriptionUseGPU: Bool,
-        localTranscriptionDefaultsRevision: Int,
         activeAgentID: String,
         agents: [Agent]
     ) {
@@ -195,13 +174,6 @@ public struct AppConfig: Codable, Hashable, Sendable {
         self.microphoneVolume = microphoneVolume
         self.echoCancellationEnabled = echoCancellationEnabled
         self.noiseReductionEnabled = noiseReductionEnabled
-        self.localTranscriptionEnabled = localTranscriptionEnabled
-        self.attachTranscriptToAI = attachTranscriptToAI
-        self.localTranscriptionModel = localTranscriptionModel
-        self.localTranscriptionLanguage = localTranscriptionLanguage
-        self.localTranscriptionThreadCount = localTranscriptionThreadCount
-        self.localTranscriptionUseGPU = localTranscriptionUseGPU
-        self.localTranscriptionDefaultsRevision = localTranscriptionDefaultsRevision
         self.activeAgentID = activeAgentID
         self.agents = agents
     }
@@ -238,23 +210,6 @@ public struct AppConfig: Codable, Hashable, Sendable {
         microphoneVolume = try container.decodeIfPresent(Double.self, forKey: .microphoneVolume) ?? defaults.microphoneVolume
         echoCancellationEnabled = try container.decodeIfPresent(Bool.self, forKey: .echoCancellationEnabled) ?? defaults.echoCancellationEnabled
         noiseReductionEnabled = try container.decodeIfPresent(Bool.self, forKey: .noiseReductionEnabled) ?? defaults.noiseReductionEnabled
-        localTranscriptionEnabled = try container.decodeIfPresent(Bool.self, forKey: .localTranscriptionEnabled) ?? defaults.localTranscriptionEnabled
-        attachTranscriptToAI = try container.decodeIfPresent(Bool.self, forKey: .attachTranscriptToAI) ?? defaults.attachTranscriptToAI
-        let decodedTranscriptionModel = try container.decodeIfPresent(String.self, forKey: .localTranscriptionModel) ?? defaults.localTranscriptionModel
-        if decodedTranscriptionModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            localTranscriptionModel = defaults.localTranscriptionModel
-        } else {
-            localTranscriptionModel = NativeSpeechDefaults.engineID
-        }
-        localTranscriptionLanguage = NativeSpeechDefaults.normalizedLanguageCode(
-            try container.decodeIfPresent(String.self, forKey: .localTranscriptionLanguage) ?? defaults.localTranscriptionLanguage
-        )
-        localTranscriptionThreadCount = try container.decodeIfPresent(Int.self, forKey: .localTranscriptionThreadCount) ?? defaults.localTranscriptionThreadCount
-        localTranscriptionUseGPU = try container.decodeIfPresent(Bool.self, forKey: .localTranscriptionUseGPU) ?? defaults.localTranscriptionUseGPU
-        localTranscriptionDefaultsRevision = try container.decodeIfPresent(
-            Int.self,
-            forKey: .localTranscriptionDefaultsRevision
-        ) ?? 0
         activeAgentID = try container.decodeIfPresent(String.self, forKey: .activeAgentID) ?? defaults.activeAgentID
         agents = try container.decodeIfPresent([Agent].self, forKey: .agents) ?? defaults.agents
     }
@@ -519,13 +474,6 @@ public extension AppConfig {
         microphoneVolume: 1.0,
         echoCancellationEnabled: true,
         noiseReductionEnabled: false,
-        localTranscriptionEnabled: true,
-        attachTranscriptToAI: true,
-        localTranscriptionModel: NativeSpeechDefaults.engineID,
-        localTranscriptionLanguage: NativeSpeechDefaults.defaultLanguageCode,
-        localTranscriptionThreadCount: 2,
-        localTranscriptionUseGPU: false,
-        localTranscriptionDefaultsRevision: NativeSpeechDefaults.currentDefaultsRevision,
         activeAgentID: "default",
         agents: defaultAgents
     )

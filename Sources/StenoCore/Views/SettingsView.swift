@@ -16,8 +16,6 @@ public struct SettingsView: View {
             TabView {
                 generalTab
                     .tabItem { Text("Общие") }
-                transcriptionTab
-                    .tabItem { Text("Транскрибация") }
                 agentsTab
                     .tabItem { Text("Агенты") }
             }
@@ -113,11 +111,6 @@ public struct SettingsView: View {
                     title: "Микрофон",
                     isGranted: viewModel.permissionState.hasMicrophone,
                     action: viewModel.openMicrophoneSettings
-                )
-                PermissionSettingsRow(
-                    title: "Распознавание речи",
-                    isGranted: viewModel.permissionState.hasSpeechRecognition,
-                    action: viewModel.openSpeechRecognitionSettings
                 )
                 Button("Refresh Permissions") {
                     viewModel.refreshPermissions()
@@ -297,89 +290,6 @@ public struct SettingsView: View {
     private func modelPickerTitle(_ model: AIModelReference) -> String {
         let dynamicMarker = model.isDynamicallyVerified ? "video" : "allowlist"
         return "\(model.displayName) · \(model.tier.displayName) · \(dynamicMarker)"
-    }
-
-    private var transcriptionTab: some View {
-        Form {
-            Section("Local Transcription") {
-                Toggle("Локальная транскрибация Apple Speech", isOn: $viewModel.config.localTranscriptionEnabled)
-                Toggle("Передавать транскрипт в AI", isOn: $viewModel.config.attachTranscriptToAI)
-                    .disabled(!viewModel.config.localTranscriptionEnabled)
-
-                Picker("Язык распознавания", selection: Binding(
-                    get: { viewModel.config.localTranscriptionLanguage },
-                    set: { viewModel.selectTranscriptionLanguage($0) }
-                )) {
-                    ForEach(speechLanguageOptions) { option in
-                        Text(option.displayName).tag(option.localeIdentifier)
-                    }
-                }
-                .disabled(!viewModel.config.localTranscriptionEnabled)
-
-                speechLanguageStatus
-
-                HStack {
-                    Button {
-                        Task { await viewModel.refreshSpeechLanguageOptions() }
-                    } label: {
-                        if viewModel.isRefreshingSpeechLanguages {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Label("Обновить языки", systemImage: "arrow.clockwise")
-                        }
-                    }
-                    .disabled(viewModel.isRefreshingSpeechLanguages)
-
-                    Button {
-                        viewModel.openDictationSettings()
-                    } label: {
-                        Label("Управлять языками диктовки", systemImage: "gearshape")
-                    }
-                }
-            }
-        }
-        .formStyle(.grouped)
-        .task {
-            await viewModel.refreshSpeechLanguageOptions()
-        }
-    }
-
-    private var speechLanguageOptions: [NativeSpeechLanguageOption] {
-        if viewModel.availableSpeechLanguageOptions.isEmpty {
-            return [
-                NativeSpeechLanguageOption(
-                    id: NativeSpeechDefaults.systemLanguageCode,
-                    localeIdentifier: NativeSpeechDefaults.systemLanguageCode,
-                    resolvedLocaleIdentifier: NativeSpeechDefaults.systemLanguageCode,
-                    displayName: "System Language",
-                    isSystemSelection: true,
-                    isSupported: true,
-                    isRecognizerAvailable: true,
-                    isOfflineAvailable: false
-                )
-            ]
-        }
-        return viewModel.availableSpeechLanguageOptions
-    }
-
-    @ViewBuilder
-    private var speechLanguageStatus: some View {
-        if let status = viewModel.selectedSpeechLanguageStatus {
-            LabeledContent("Оффлайн-статус") {
-                Label(status.statusText, systemImage: status.isOfflineAvailable ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                    .foregroundStyle(status.isOfflineAvailable ? .green : .orange)
-            }
-            Text("Steno использует только on-device recognition. Если язык не готов, установите его в настройках диктовки macOS и обновите список.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        } else {
-            LabeledContent("Оффлайн-статус") {
-                Text("Not checked")
-                    .foregroundStyle(.secondary)
-            }
-        }
     }
 
     private var agentsTab: some View {

@@ -124,7 +124,6 @@ public actor GeminiClient {
     public func generateReport(
         videoURL: URL,
         audioURLs: [URL],
-        transcript: AITranscriptContext?,
         config: AppConfig,
         agent: Agent,
         progress: AIProgressHandler? = nil
@@ -177,7 +176,6 @@ public actor GeminiClient {
             let response = try await generateContent(
                 files: readyFiles,
                 videoURL: videoURL,
-                transcript: transcript,
                 config: config,
                 agent: agent
             )
@@ -350,12 +348,11 @@ public actor GeminiClient {
     private func generateContent(
         files: [GeminiFile],
         videoURL: URL,
-        transcript: AITranscriptContext?,
         config: AppConfig,
         agent: Agent
     ) async throws -> GenerateContentResponse {
         let url = try apiEndpoint(path: "v1beta/models/\(config.modelName):generateContent", baseURL: config.baseURL, apiKey: config.apiKey)
-        let prompt = AIPromptBuilder.meetingAnalysisPrompt(videoURL: videoURL, transcript: transcript)
+        let prompt = AIPromptBuilder.meetingAnalysisPrompt(videoURL: videoURL)
 
         let parts = files.map {
             ContentPart(fileData: FileData(mimeType: $0.mimeType, fileURI: $0.uri), text: nil)
