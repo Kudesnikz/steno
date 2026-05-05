@@ -146,12 +146,24 @@ public struct SettingsView: View {
                 Toggle("Эхоподавление (legacy ffmpeg pipeline)", isOn: $viewModel.config.echoCancellationEnabled)
                 Toggle("Шумоподавление DeepFilterNet (legacy binary)", isOn: $viewModel.config.noiseReductionEnabled)
                 LabeledContent("System Volume") {
-                    Slider(value: $viewModel.config.systemVolume, in: 0...2)
-                        .frame(width: 220)
+                    HStack {
+                        Slider(value: $viewModel.config.systemVolume, in: 0...2)
+                            .frame(width: 220)
+                        Text(String(format: "x%.1f", viewModel.config.systemVolume))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                            .frame(width: 44, alignment: .trailing)
+                    }
                 }
                 LabeledContent("Microphone Volume") {
-                    Slider(value: $viewModel.config.microphoneVolume, in: 0...2)
-                        .frame(width: 220)
+                    HStack {
+                        Slider(value: $viewModel.config.microphoneVolume, in: 0...4)
+                            .frame(width: 220)
+                        Text(String(format: "x%.1f", viewModel.config.microphoneVolume))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                            .frame(width: 44, alignment: .trailing)
+                    }
                 }
             }
         }

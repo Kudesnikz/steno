@@ -234,8 +234,14 @@ public struct AppConfig: Codable, Hashable, Sendable {
         muteMic = try container.decodeIfPresent(Bool.self, forKey: .muteMic) ?? defaults.muteMic
         usedTokens = try container.decodeIfPresent(Int.self, forKey: .usedTokens) ?? defaults.usedTokens
         lastRequestTokens = try container.decodeIfPresent(Int.self, forKey: .lastRequestTokens) ?? defaults.lastRequestTokens
-        systemVolume = try container.decodeIfPresent(Double.self, forKey: .systemVolume) ?? defaults.systemVolume
-        microphoneVolume = try container.decodeIfPresent(Double.self, forKey: .microphoneVolume) ?? defaults.microphoneVolume
+        systemVolume = Self.clampedVolume(
+            try container.decodeIfPresent(Double.self, forKey: .systemVolume) ?? defaults.systemVolume,
+            range: 0...2
+        )
+        microphoneVolume = Self.clampedVolume(
+            try container.decodeIfPresent(Double.self, forKey: .microphoneVolume) ?? defaults.microphoneVolume,
+            range: 0...4
+        )
         echoCancellationEnabled = try container.decodeIfPresent(Bool.self, forKey: .echoCancellationEnabled) ?? defaults.echoCancellationEnabled
         noiseReductionEnabled = try container.decodeIfPresent(Bool.self, forKey: .noiseReductionEnabled) ?? defaults.noiseReductionEnabled
         localTranscriptionEnabled = try container.decodeIfPresent(Bool.self, forKey: .localTranscriptionEnabled) ?? defaults.localTranscriptionEnabled
@@ -516,7 +522,7 @@ public extension AppConfig {
         usedTokens: 0,
         lastRequestTokens: 0,
         systemVolume: 1.0,
-        microphoneVolume: 1.0,
+        microphoneVolume: 2.0,
         echoCancellationEnabled: true,
         noiseReductionEnabled: false,
         localTranscriptionEnabled: true,
@@ -589,5 +595,12 @@ public extension AppConfig {
         case .openRouter:
             openRouterBaseURL
         }
+    }
+
+    private static func clampedVolume(_ value: Double, range: ClosedRange<Double>) -> Double {
+        guard value.isFinite else {
+            return range.lowerBound
+        }
+        return min(max(value, range.lowerBound), range.upperBound)
     }
 }

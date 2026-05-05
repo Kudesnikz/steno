@@ -6,7 +6,7 @@ public enum NativeSpeechDefaults {
     public static let engineDisplayName = "Apple Speech On-Device"
     public static let systemLanguageCode = "system"
     public static let defaultLanguageCode = systemLanguageCode
-    public static let currentDefaultsRevision = 3
+    public static let currentDefaultsRevision = 4
 
     public static func normalizedLanguageCode(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)

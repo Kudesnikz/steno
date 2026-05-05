@@ -529,6 +529,8 @@ public final class AppViewModel {
                 outputURL: outputURL,
                 preset: config.preset(),
                 selectedDisplayID: config.videoDeviceIndex,
+                systemVolume: config.systemVolume,
+                microphoneVolume: config.microphoneVolume,
                 audioHandler: audioHandler
             ) { [weak self] event in
                 Task { @MainActor in
@@ -888,6 +890,8 @@ public final class AppViewModel {
         config.localTranscriptionLanguage = NativeSpeechDefaults.normalizedLanguageCode(config.localTranscriptionLanguage)
         config.localTranscriptionThreadCount = 1
         config.localTranscriptionUseGPU = false
+        config.systemVolume = 1.0
+        config.microphoneVolume = 2.0
         config.localTranscriptionDefaultsRevision = NativeSpeechDefaults.currentDefaultsRevision
         return true
     }
@@ -910,6 +914,8 @@ public final class AppViewModel {
         config.localTranscriptionThreadCount = 1
         config.localTranscriptionUseGPU = false
         config.localTranscriptionLanguage = NativeSpeechDefaults.normalizedLanguageCode(config.localTranscriptionLanguage)
+        config.systemVolume = min(max(config.systemVolume.isFinite ? config.systemVolume : 1.0, 0), 2)
+        config.microphoneVolume = min(max(config.microphoneVolume.isFinite ? config.microphoneVolume : 2.0, 0), 4)
         normalizeCaptureDisplaySelection(shouldPersist: false)
         config.localTranscriptionDefaultsRevision = NativeSpeechDefaults.currentDefaultsRevision
     }

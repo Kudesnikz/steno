@@ -151,11 +151,13 @@ public actor ContinuousSpeechCoordinator {
     private var document: TranscriptDocument
     private var sessions: [RecordingAudioSource: NativeSpeechSession] = [:]
     private var recentBuffers: [RecordingAudioSource: [RecordingAudioBuffer]] = [:]
+    private var latestPartialSnapshots: [String: NativeSpeechRecognitionSnapshot] = [:]
     private var lastCommittedEndBySource: [RecordingAudioSource: Double] = [:]
     private var isFinishing = false
     private var didReturnFinalDocument = false
     private var lastReportedProgress: TranscriptionProgress?
     private var lastPartialUpdate = Date.distantPast
+    private var lastAudioDiagnosticBySource: [RecordingAudioSource: Date] = [:]
     private var pendingError: (any Error)?
 
     private let restartAfterSeconds = 48.0
@@ -203,11 +205,13 @@ public actor ContinuousSpeechCoordinator {
         let existingSession = sessions[buffer.source]
         let hasSpeechActivity = AudioActivityDetector.containsSpeech(level: buffer.level, source: buffer.source)
         guard existingSession != nil || hasSpeechActivity else {
+            logAudioDiagnostic(buffer, sessionID: "pending", hasSpeechActivity: hasSpeechActivity)
             return
         }
 
         rememberRecentBuffer(buffer)
         var session = try activeSession(for: buffer.source, initialStartTime: buffer.startTimeSeconds)
+        logAudioDiagnostic(buffer, sessionID: session.id, hasSpeechActivity: hasSpeechActivity)
         if shouldRotate(session: session, nextBuffer: buffer) {
             end(session)
             session = try startSession(
@@ -215,6 +219,7 @@ public actor ContinuousSpeechCoordinator {
                 initialStartTime: buffer.startTimeSeconds,
                 includeOverlap: true
             )
+            logAudioDiagnostic(buffer, sessionID: session.id, hasSpeechActivity: hasSpeechActivity)
         }
 
         session.append(buffer)
@@ -288,6 +293,10 @@ public actor ContinuousSpeechCoordinator {
             session.append(buffer)
         }
         AppLog.debug("Started Apple Speech session source=\(source.rawValue) id=\(sessionID)", category: .recording)
+        AppLog.debug(
+            "Apple Speech session format source=\(source.rawValue) id=\(sessionID) language=\(config.localTranscriptionLanguage) nativeFormat=\(bridge.nativeAudioFormatDescription)",
+            category: .recording
+        )
         return session
     }
 
@@ -329,6 +338,7 @@ public actor ContinuousSpeechCoordinator {
         if let errorDescription, snapshot == nil {
             AppLog.warning("Apple Speech task error: \(errorDescription)", category: .recording)
             if NativeSpeechTranscriptionError.isRecoverableEmptySpeechError(message: errorDescription) {
+                commitLatestPartialIfNeeded(source: source, sessionID: sessionID, reason: errorDescription)
                 discardRecoverableSession(source: source, sessionID: sessionID, reason: errorDescription)
                 return
             }
@@ -343,8 +353,20 @@ public actor ContinuousSpeechCoordinator {
         }
 
         if snapshot.isFinal {
+            if snapshot.segments.isEmpty,
+               commitLatestPartialIfNeeded(source: snapshot.source, sessionID: snapshot.sessionID, reason: "empty final") {
+                return
+            }
+            latestPartialSnapshots.removeValue(forKey: snapshot.sessionID)
             appendCommittedSegments(snapshot.segments, source: snapshot.source)
         } else {
+            if !snapshot.segments.isEmpty {
+                latestPartialSnapshots[snapshot.sessionID] = snapshot
+                AppLog.debug(
+                    "Apple Speech partial source=\(snapshot.source.rawValue) id=\(snapshot.sessionID) segments=\(snapshot.segments.count) text=\"\(Self.previewText(snapshot.segments))\"",
+                    category: .recording
+                )
+            }
             publishPartialSegments(snapshot.segments, source: snapshot.source)
         }
     }
@@ -354,12 +376,69 @@ public actor ContinuousSpeechCoordinator {
             return
         }
         sessions.removeValue(forKey: source)
+        latestPartialSnapshots.removeValue(forKey: sessionID)
         recentBuffers[source] = []
         AppLog.info(
             "Apple Speech session ended without transcript source=\(source.rawValue) id=\(sessionID) reason=\(reason)",
             category: .recording
         )
         reportProgress(force: true)
+    }
+
+    @discardableResult
+    private func commitLatestPartialIfNeeded(source: RecordingAudioSource, sessionID: String, reason: String) -> Bool {
+        guard let snapshot = latestPartialSnapshots.removeValue(forKey: sessionID),
+              !snapshot.segments.isEmpty else {
+            return false
+        }
+        AppLog.info(
+            "Committing latest Apple Speech partial source=\(source.rawValue) id=\(sessionID) reason=\(reason) segments=\(snapshot.segments.count) text=\"\(Self.previewText(snapshot.segments))\"",
+            category: .recording
+        )
+        appendCommittedSegments(snapshot.segments, source: source)
+        return true
+    }
+
+    private func logAudioDiagnostic(
+        _ buffer: RecordingAudioBuffer,
+        sessionID: String,
+        hasSpeechActivity: Bool
+    ) {
+        let now = Date()
+        if let previous = lastAudioDiagnosticBySource[buffer.source],
+           now.timeIntervalSince(previous) < 1.0 {
+            return
+        }
+        lastAudioDiagnosticBySource[buffer.source] = now
+        AppLog.debug(
+            "Apple Speech audio source=\(buffer.source.rawValue) id=\(sessionID) frames=\(buffer.pcmBuffer.frameLength) duration=\(String(format: "%.3f", buffer.durationSeconds))s format=\(Self.describe(buffer.pcmBuffer.format)) rms=\(String(format: "%.5f", buffer.level.rms)) peak=\(String(format: "%.5f", buffer.level.peak)) speechActivity=\(hasSpeechActivity)",
+            category: .recording
+        )
+    }
+
+    fileprivate static func previewText(_ segments: [TranscriptSegment]) -> String {
+        let text = segments.map(\.text).joined(separator: " ")
+        let collapsed = text.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        return String(collapsed.prefix(120))
+    }
+
+    fileprivate static func describe(_ format: AVAudioFormat) -> String {
+        let commonFormat: String
+        switch format.commonFormat {
+        case .pcmFormatFloat32:
+            commonFormat = "float32"
+        case .pcmFormatFloat64:
+            commonFormat = "float64"
+        case .pcmFormatInt16:
+            commonFormat = "int16"
+        case .pcmFormatInt32:
+            commonFormat = "int32"
+        case .otherFormat:
+            commonFormat = "other"
+        @unknown default:
+            commonFormat = "unknown"
+        }
+        return "\(commonFormat) \(Int(format.sampleRate))Hz \(format.channelCount)ch interleaved=\(format.isInterleaved)"
     }
 
     private func publishPartialSegments(_ segments: [TranscriptSegment], source: RecordingAudioSource) {
@@ -474,6 +553,10 @@ private final class NativeSpeechRecognitionBridge: @unchecked Sendable {
     private let request: SFSpeechAudioBufferRecognitionRequest
     private let task: SFSpeechRecognitionTask
     private let converter = NativeSpeechPCMBufferConverter()
+
+    var nativeAudioFormatDescription: String {
+        ContinuousSpeechCoordinator.describe(request.nativeAudioFormat)
+    }
 
     init(
         recognizer: SFSpeechRecognizer,

@@ -45,6 +45,8 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
     private var audioHandler: AudioHandler?
     private var addedAudioOutputTypes: [SCStreamOutputType] = []
     private var audioStartPTS: CMTime?
+    private var systemVolume = 1.0
+    private var microphoneVolume = 2.0
     private var lifecycle: Lifecycle = .idle
     private var didFinishOutput = false
     private var didSendTerminalEvent = false
@@ -58,14 +60,18 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
         outputURL: URL,
         preset: VideoQualityPreset,
         selectedDisplayID: String? = nil,
+        systemVolume: Double = 1.0,
+        microphoneVolume: Double = 2.0,
         audioHandler: AudioHandler? = nil,
         eventHandler: @escaping EventHandler
     ) async throws {
         setLifecycle(.starting)
         self.eventHandler = eventHandler
         self.audioHandler = audioHandler
+        self.systemVolume = Self.sanitizedVolume(systemVolume, range: 0...2)
+        self.microphoneVolume = Self.sanitizedVolume(microphoneVolume, range: 0...4)
         AppLog.info(
-            "Starting recording width=\(preset.width) height=\(preset.height) fps=\(preset.fps) displayID=\(selectedDisplayID ?? "default")",
+            "Starting recording width=\(preset.width) height=\(preset.height) fps=\(preset.fps) displayID=\(selectedDisplayID ?? "default") systemVolume=\(self.systemVolume) microphoneVolume=\(self.microphoneVolume)",
             category: .recording
         )
 
@@ -372,11 +378,14 @@ extension ScreenRecordingService: SCStreamOutput {
         }
 
         let duration = audioDuration(sampleBuffer: sampleBuffer)
-        let level = AudioSampleBufferLevelAnalyzer.level(for: sampleBuffer)
+        let rawLevel = AudioSampleBufferLevelAnalyzer.level(for: sampleBuffer)
         guard let pcmBuffer = copyPCMBuffer(from: sampleBuffer) else {
             AppLog.warning("Skipping audio buffer that could not be copied for transcription", category: .recording)
             return
         }
+        let gain = volumeMultiplier(for: source)
+        applyGain(gain, to: pcmBuffer)
+        let level = RecordingAudioLevel(rms: rawLevel.rms * gain, peak: rawLevel.peak * gain)
         audioHandler(RecordingAudioBuffer(
             source: source,
             startTimeSeconds: startTimeSeconds,
@@ -384,6 +393,15 @@ extension ScreenRecordingService: SCStreamOutput {
             pcmBuffer: pcmBuffer,
             level: level
         ))
+    }
+
+    private func volumeMultiplier(for source: RecordingAudioSource) -> Double {
+        switch source {
+        case .system:
+            systemVolume
+        case .microphone:
+            microphoneVolume
+        }
     }
 
     private func copyPCMBuffer(from sampleBuffer: CMSampleBuffer) -> AVAudioPCMBuffer? {
@@ -413,6 +431,62 @@ extension ScreenRecordingService: SCStreamOutput {
         return pcmBuffer
     }
 
+    private func applyGain(_ gain: Double, to pcmBuffer: AVAudioPCMBuffer) {
+        guard gain.isFinite, gain != 1 else {
+            return
+        }
+        let asbd = pcmBuffer.format.streamDescription.pointee
+        let flags = asbd.mFormatFlags
+        let isFloat = flags & kAudioFormatFlagIsFloat != 0
+        let isSignedInteger = flags & kAudioFormatFlagIsSignedInteger != 0
+        let buffers = UnsafeMutableAudioBufferListPointer(pcmBuffer.mutableAudioBufferList)
+
+        for buffer in buffers {
+            guard let data = buffer.mData else {
+                continue
+            }
+            if isFloat, asbd.mBitsPerChannel == 32 {
+                scaleFloat32(data: data, byteCount: Int(buffer.mDataByteSize), gain: Float(gain))
+            } else if isFloat, asbd.mBitsPerChannel == 64 {
+                scaleFloat64(data: data, byteCount: Int(buffer.mDataByteSize), gain: gain)
+            } else if isSignedInteger, asbd.mBitsPerChannel == 16 {
+                scaleInt16(data: data, byteCount: Int(buffer.mDataByteSize), gain: gain)
+            } else if isSignedInteger, asbd.mBitsPerChannel == 32 {
+                scaleInt32(data: data, byteCount: Int(buffer.mDataByteSize), gain: gain)
+            }
+        }
+    }
+
+    private func scaleFloat32(data: UnsafeMutableRawPointer, byteCount: Int, gain: Float) {
+        let values = data.bindMemory(to: Float.self, capacity: byteCount / MemoryLayout<Float>.stride)
+        for index in 0..<(byteCount / MemoryLayout<Float>.stride) {
+            values[index] *= gain
+        }
+    }
+
+    private func scaleFloat64(data: UnsafeMutableRawPointer, byteCount: Int, gain: Double) {
+        let values = data.bindMemory(to: Double.self, capacity: byteCount / MemoryLayout<Double>.stride)
+        for index in 0..<(byteCount / MemoryLayout<Double>.stride) {
+            values[index] *= gain
+        }
+    }
+
+    private func scaleInt16(data: UnsafeMutableRawPointer, byteCount: Int, gain: Double) {
+        let values = data.bindMemory(to: Int16.self, capacity: byteCount / MemoryLayout<Int16>.stride)
+        for index in 0..<(byteCount / MemoryLayout<Int16>.stride) {
+            let scaled = (Double(values[index]) * gain).rounded()
+            values[index] = Int16(min(max(scaled, Double(Int16.min)), Double(Int16.max)))
+        }
+    }
+
+    private func scaleInt32(data: UnsafeMutableRawPointer, byteCount: Int, gain: Double) {
+        let values = data.bindMemory(to: Int32.self, capacity: byteCount / MemoryLayout<Int32>.stride)
+        for index in 0..<(byteCount / MemoryLayout<Int32>.stride) {
+            let scaled = (Double(values[index]) * gain).rounded()
+            values[index] = Int32(min(max(scaled, Double(Int32.min)), Double(Int32.max)))
+        }
+    }
+
     private func audioDuration(sampleBuffer: CMSampleBuffer) -> Double {
         let duration = CMSampleBufferGetDuration(sampleBuffer)
         if duration.isValid, duration.seconds.isFinite, duration.seconds > 0 {
@@ -426,6 +500,13 @@ extension ScreenRecordingService: SCStreamOutput {
             return 0
         }
         return Double(CMSampleBufferGetNumSamples(sampleBuffer)) / format.sampleRate
+    }
+
+    private static func sanitizedVolume(_ value: Double, range: ClosedRange<Double>) -> Double {
+        guard value.isFinite else {
+            return range.lowerBound
+        }
+        return min(max(value, range.lowerBound), range.upperBound)
     }
 }
 

@@ -40,6 +40,41 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertEqual(result.config.agents.count, AppConfig.defaultAgents.count)
     }
 
+    func testDefaultRecordingVolumesMatchSpeechPolicy() {
+        XCTAssertEqual(AppConfig.default.systemVolume, 1.0)
+        XCTAssertEqual(AppConfig.default.microphoneVolume, 2.0)
+    }
+
+    func testDecodesRecordingVolumesInsideSupportedRanges() throws {
+        let highPayload = """
+        {
+          "sys_volume": 10,
+          "mic_volume": 10
+        }
+        """
+        let highConfig = try JSONDecoder().decode(
+            AppConfig.self,
+            from: try XCTUnwrap(highPayload.data(using: .utf8))
+        )
+
+        XCTAssertEqual(highConfig.systemVolume, 2.0)
+        XCTAssertEqual(highConfig.microphoneVolume, 4.0)
+
+        let lowPayload = """
+        {
+          "sys_volume": -1,
+          "mic_volume": -1
+        }
+        """
+        let lowConfig = try JSONDecoder().decode(
+            AppConfig.self,
+            from: try XCTUnwrap(lowPayload.data(using: .utf8))
+        )
+
+        XCTAssertEqual(lowConfig.systemVolume, 0.0)
+        XCTAssertEqual(lowConfig.microphoneVolume, 0.0)
+    }
+
     func testDecodesLegacyTranscriptionSettingsIntoNativeSpeechDefaults() throws {
         let payload = """
         {
