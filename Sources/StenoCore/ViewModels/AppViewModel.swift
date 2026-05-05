@@ -93,6 +93,7 @@ public final class AppViewModel {
     public var showOnboarding = false
     public var showSettings = false
     public var permissionState = PermissionState(hasScreenCapture: false, hasMicrophone: false)
+    public var microphoneInputVolumeState = SystemInputVolumeState()
 
     @ObservationIgnored private let configStore: ConfigStore
     @ObservationIgnored private var sessionStore = SessionStore(saveDirectory: URL(fileURLWithPath: AppConfig.default.saveDirectory))
@@ -100,6 +101,7 @@ public final class AppViewModel {
     @ObservationIgnored private let captureDisplayService: CaptureDisplayService
     @ObservationIgnored private let aiClient: AIProcessingClient
     @ObservationIgnored private let modelCatalogService: AIModelCatalogService
+    @ObservationIgnored private let inputVolumeService: SystemInputVolumeService
     @ObservationIgnored private var recorder: ScreenRecordingService?
     @ObservationIgnored private var recordingTimerTask: Task<Void, Never>?
     @ObservationIgnored private var aiTask: Task<Void, Never>?
@@ -111,13 +113,15 @@ public final class AppViewModel {
         permissionsService: PermissionsService = PermissionsService(),
         captureDisplayService: CaptureDisplayService = CaptureDisplayService(),
         aiClient: AIProcessingClient = AIProcessingClient(),
-        modelCatalogService: AIModelCatalogService = AIModelCatalogService()
+        modelCatalogService: AIModelCatalogService = AIModelCatalogService(),
+        inputVolumeService: SystemInputVolumeService = SystemInputVolumeService()
     ) {
         self.configStore = configStore
         self.permissionsService = permissionsService
         self.captureDisplayService = captureDisplayService
         self.aiClient = aiClient
         self.modelCatalogService = modelCatalogService
+        self.inputVolumeService = inputVolumeService
 
         var loadedConfig = AppConfig.default
         var didFindExistingConfig = false
@@ -155,12 +159,16 @@ public final class AppViewModel {
         Task {
             await refreshAIModels()
         }
+        inputVolumeService.startMonitoring { [weak self] state in
+            self?.microphoneInputVolumeState = state
+        }
         AppLog.info("AppViewModel initialized; onboarding=\(showOnboarding)", category: .app)
     }
 
     deinit {
         recordingTimerTask?.cancel()
         aiTask?.cancel()
+        inputVolumeService.stopMonitoring()
     }
 
     public var selectedSession: MeetingSession? {
@@ -250,6 +258,23 @@ public final class AppViewModel {
 
     public func openMicrophoneSettings() {
         permissionsService.openMicrophoneSettings()
+    }
+
+    public func setMicrophoneInputVolume(_ volume: Double) {
+        let clamped = min(1, max(0, volume))
+        microphoneInputVolumeState.volume = clamped
+        do {
+            try inputVolumeService.setVolume(clamped)
+            microphoneInputVolumeState = inputVolumeService.currentState()
+            AppLog.info(
+                "System microphone input volume set to \(String(format: "%.2f", clamped))",
+                category: .config
+            )
+        } catch {
+            microphoneInputVolumeState = inputVolumeService.currentState()
+            errorMessage = error.localizedDescription
+            AppLog.warning("System microphone input volume update failed: \(error.localizedDescription)", category: .config)
+        }
     }
 
     public func saveConfig() {

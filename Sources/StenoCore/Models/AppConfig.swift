@@ -65,16 +65,8 @@ public struct AppConfig: Codable, Hashable, Sendable {
     public var saveDirectory: String
     public var videoQuality: String
     public var showRecordingTime: Bool
-    public var volumeMain: Double
-    public var volumeMic: Double
-    public var muteMain: Bool
-    public var muteMic: Bool
     public var usedTokens: Int
     public var lastRequestTokens: Int
-    public var systemVolume: Double
-    public var microphoneVolume: Double
-    public var echoCancellationEnabled: Bool
-    public var noiseReductionEnabled: Bool
     public var activeAgentID: String
     public var agents: [Agent]
 
@@ -98,16 +90,8 @@ public struct AppConfig: Codable, Hashable, Sendable {
         case saveDirectory = "save_dir"
         case videoQuality = "video_quality"
         case showRecordingTime = "show_recording_time"
-        case volumeMain = "volume_main"
-        case volumeMic = "volume_mic"
-        case muteMain = "mute_main"
-        case muteMic = "mute_mic"
         case usedTokens = "used_tokens"
         case lastRequestTokens = "last_request_tokens"
-        case systemVolume = "sys_volume"
-        case microphoneVolume = "mic_volume"
-        case echoCancellationEnabled = "echo_cancellation_enabled"
-        case noiseReductionEnabled = "noise_reduction_enabled"
         case activeAgentID = "active_agent_id"
         case agents
     }
@@ -132,16 +116,8 @@ public struct AppConfig: Codable, Hashable, Sendable {
         saveDirectory: String,
         videoQuality: String,
         showRecordingTime: Bool,
-        volumeMain: Double,
-        volumeMic: Double,
-        muteMain: Bool,
-        muteMic: Bool,
         usedTokens: Int,
         lastRequestTokens: Int,
-        systemVolume: Double,
-        microphoneVolume: Double,
-        echoCancellationEnabled: Bool,
-        noiseReductionEnabled: Bool,
         activeAgentID: String,
         agents: [Agent]
     ) {
@@ -164,16 +140,8 @@ public struct AppConfig: Codable, Hashable, Sendable {
         self.saveDirectory = saveDirectory
         self.videoQuality = videoQuality
         self.showRecordingTime = showRecordingTime
-        self.volumeMain = volumeMain
-        self.volumeMic = volumeMic
-        self.muteMain = muteMain
-        self.muteMic = muteMic
         self.usedTokens = usedTokens
         self.lastRequestTokens = lastRequestTokens
-        self.systemVolume = systemVolume
-        self.microphoneVolume = microphoneVolume
-        self.echoCancellationEnabled = echoCancellationEnabled
-        self.noiseReductionEnabled = noiseReductionEnabled
         self.activeAgentID = activeAgentID
         self.agents = agents
     }
@@ -200,16 +168,8 @@ public struct AppConfig: Codable, Hashable, Sendable {
         saveDirectory = try container.decodeIfPresent(String.self, forKey: .saveDirectory) ?? defaults.saveDirectory
         videoQuality = try container.decodeIfPresent(String.self, forKey: .videoQuality) ?? defaults.videoQuality
         showRecordingTime = try container.decodeIfPresent(Bool.self, forKey: .showRecordingTime) ?? defaults.showRecordingTime
-        volumeMain = try container.decodeIfPresent(Double.self, forKey: .volumeMain) ?? defaults.volumeMain
-        volumeMic = try container.decodeIfPresent(Double.self, forKey: .volumeMic) ?? defaults.volumeMic
-        muteMain = try container.decodeIfPresent(Bool.self, forKey: .muteMain) ?? defaults.muteMain
-        muteMic = try container.decodeIfPresent(Bool.self, forKey: .muteMic) ?? defaults.muteMic
         usedTokens = try container.decodeIfPresent(Int.self, forKey: .usedTokens) ?? defaults.usedTokens
         lastRequestTokens = try container.decodeIfPresent(Int.self, forKey: .lastRequestTokens) ?? defaults.lastRequestTokens
-        systemVolume = try container.decodeIfPresent(Double.self, forKey: .systemVolume) ?? defaults.systemVolume
-        microphoneVolume = try container.decodeIfPresent(Double.self, forKey: .microphoneVolume) ?? defaults.microphoneVolume
-        echoCancellationEnabled = try container.decodeIfPresent(Bool.self, forKey: .echoCancellationEnabled) ?? defaults.echoCancellationEnabled
-        noiseReductionEnabled = try container.decodeIfPresent(Bool.self, forKey: .noiseReductionEnabled) ?? defaults.noiseReductionEnabled
         activeAgentID = try container.decodeIfPresent(String.self, forKey: .activeAgentID) ?? defaults.activeAgentID
         agents = try container.decodeIfPresent([Agent].self, forKey: .agents) ?? defaults.agents
     }
@@ -464,16 +424,8 @@ public extension AppConfig {
         saveDirectory: UserPaths.defaultSaveDirectory.path,
         videoQuality: "Medium",
         showRecordingTime: true,
-        volumeMain: 1.0,
-        volumeMic: 1.0,
-        muteMain: false,
-        muteMic: false,
         usedTokens: 0,
         lastRequestTokens: 0,
-        systemVolume: 1.0,
-        microphoneVolume: 1.0,
-        echoCancellationEnabled: true,
-        noiseReductionEnabled: false,
         activeAgentID: "default",
         agents: defaultAgents
     )

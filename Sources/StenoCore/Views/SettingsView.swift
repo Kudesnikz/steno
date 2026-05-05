@@ -136,15 +136,40 @@ public struct SettingsView: View {
             }
 
             Section("Audio") {
-                Toggle("Эхоподавление (legacy ffmpeg pipeline)", isOn: $viewModel.config.echoCancellationEnabled)
-                Toggle("Шумоподавление DeepFilterNet (legacy binary)", isOn: $viewModel.config.noiseReductionEnabled)
-                LabeledContent("System Volume") {
-                    Slider(value: $viewModel.config.systemVolume, in: 0...2)
-                        .frame(width: 220)
+                LabeledContent("Microphone Input Volume") {
+                    Slider(
+                        value: Binding(
+                            get: { viewModel.microphoneInputVolumeState.volume },
+                            set: { viewModel.setMicrophoneInputVolume($0) }
+                        ),
+                        in: 0...1
+                    )
+                    .disabled(!viewModel.microphoneInputVolumeState.isSettable)
+                    .frame(width: 220)
                 }
-                LabeledContent("Microphone Volume") {
-                    Slider(value: $viewModel.config.microphoneVolume, in: 0...2)
-                        .frame(width: 220)
+
+                if let deviceName = viewModel.microphoneInputVolumeState.deviceName {
+                    LabeledContent("Input Device") {
+                        Text(deviceName)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if !viewModel.microphoneInputVolumeState.isAvailable {
+                    Text("The current input device does not expose a system input volume control.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if !viewModel.microphoneInputVolumeState.isSettable {
+                    Text("This input device reports input volume, but macOS does not allow Steno to change it.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text("This controls the macOS system input volume for the selected microphone.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
