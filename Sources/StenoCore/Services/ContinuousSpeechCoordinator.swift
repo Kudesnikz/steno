@@ -156,7 +156,7 @@ public actor ContinuousSpeechCoordinator {
             )
         }
 
-        session.request.appendAudioSampleBuffer(buffer.sampleBuffer)
+        session.append(buffer)
         reportProgress()
     }
 
@@ -206,33 +206,25 @@ public actor ContinuousSpeechCoordinator {
         request.addsPunctuation = true
         request.taskHint = .dictation
 
-        let task = recognizer.recognitionTask(with: request) { result, error in
-            let snapshot = result.map {
-                NativeSpeechRecognitionSnapshot(
-                    result: $0,
-                    source: source,
-                    sessionID: sessionID,
-                    sessionStartTimeSeconds: sessionStartTime
-                )
-            }
-            let errorDescription = error?.localizedDescription
-            Task {
-                self.handleRecognition(snapshot: snapshot, errorDescription: errorDescription)
-            }
-        }
+        let bridge = NativeSpeechRecognitionBridge(
+            recognizer: recognizer,
+            request: request,
+            source: source,
+            sessionID: sessionID,
+            sessionStartTimeSeconds: sessionStartTime,
+            coordinator: self
+        )
 
         let session = NativeSpeechSession(
             id: sessionID,
             source: source,
             startTimeSeconds: sessionStartTime,
-            recognizer: recognizer,
-            request: request,
-            task: task
+            bridge: bridge
         )
         sessions[source] = session
 
         for buffer in overlap {
-            request.appendAudioSampleBuffer(buffer.sampleBuffer)
+            session.append(buffer)
         }
         AppLog.debug("Started Apple Speech session source=\(source.rawValue) id=\(sessionID)", category: .recording)
         return session
@@ -251,7 +243,7 @@ public actor ContinuousSpeechCoordinator {
             return
         }
         session.didEndAudio = true
-        session.request.endAudio()
+        session.endAudio()
         AppLog.debug("Ended Apple Speech session source=\(session.source.rawValue) id=\(session.id)", category: .recording)
     }
 
@@ -263,7 +255,7 @@ public actor ContinuousSpeechCoordinator {
         recentBuffers[buffer.source] = buffers
     }
 
-    private func handleRecognition(snapshot: NativeSpeechRecognitionSnapshot?, errorDescription: String?) {
+    fileprivate func handleRecognition(snapshot: NativeSpeechRecognitionSnapshot?, errorDescription: String?) {
         guard !didReturnFinalDocument else {
             return
         }
@@ -371,25 +363,68 @@ private final class NativeSpeechSession: @unchecked Sendable {
     let id: String
     let source: RecordingAudioSource
     let startTimeSeconds: Double
-    let recognizer: SFSpeechRecognizer
-    let request: SFSpeechAudioBufferRecognitionRequest
-    let task: SFSpeechRecognitionTask
+    private let bridge: NativeSpeechRecognitionBridge
     var didEndAudio = false
 
     init(
         id: String,
         source: RecordingAudioSource,
         startTimeSeconds: Double,
-        recognizer: SFSpeechRecognizer,
-        request: SFSpeechAudioBufferRecognitionRequest,
-        task: SFSpeechRecognitionTask
+        bridge: NativeSpeechRecognitionBridge
     ) {
         self.id = id
         self.source = source
         self.startTimeSeconds = startTimeSeconds
-        self.recognizer = recognizer
+        self.bridge = bridge
+    }
+
+    func append(_ buffer: RecordingAudioBuffer) {
+        bridge.append(buffer)
+    }
+
+    func endAudio() {
+        bridge.endAudio()
+    }
+}
+
+private final class NativeSpeechRecognitionBridge: @unchecked Sendable {
+    private let request: SFSpeechAudioBufferRecognitionRequest
+    private let task: SFSpeechRecognitionTask
+
+    init(
+        recognizer: SFSpeechRecognizer,
+        request: SFSpeechAudioBufferRecognitionRequest,
+        source: RecordingAudioSource,
+        sessionID: String,
+        sessionStartTimeSeconds: Double,
+        coordinator: ContinuousSpeechCoordinator
+    ) {
         self.request = request
-        self.task = task
+        task = recognizer.recognitionTask(with: request) { [weak coordinator] result, error in
+            let snapshot = result.map {
+                NativeSpeechRecognitionSnapshot(
+                    result: $0,
+                    source: source,
+                    sessionID: sessionID,
+                    sessionStartTimeSeconds: sessionStartTimeSeconds
+                )
+            }
+            let errorDescription = error?.localizedDescription
+            Task { [snapshot, errorDescription] in
+                guard let coordinator else {
+                    return
+                }
+                await coordinator.handleRecognition(snapshot: snapshot, errorDescription: errorDescription)
+            }
+        }
+    }
+
+    func append(_ buffer: RecordingAudioBuffer) {
+        request.appendAudioSampleBuffer(buffer.sampleBuffer)
+    }
+
+    func endAudio() {
+        request.endAudio()
     }
 
     deinit {
@@ -397,7 +432,7 @@ private final class NativeSpeechSession: @unchecked Sendable {
     }
 }
 
-private struct NativeSpeechRecognitionSnapshot: Sendable {
+fileprivate struct NativeSpeechRecognitionSnapshot: Sendable {
     var source: RecordingAudioSource
     var sessionID: String
     var isFinal: Bool
