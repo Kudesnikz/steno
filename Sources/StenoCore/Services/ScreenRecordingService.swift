@@ -50,6 +50,8 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
     private var microphoneVolume = 2.0
     private var lifecycle: Lifecycle = .idle
     private var didSendTerminalEvent = false
+    private var droppedIncompleteVideoFrameCount = 0
+    private var lastIncompleteVideoFrameLog = Date.distantPast
     private let stateLock = NSLock()
 
     public override init() {
@@ -218,6 +220,8 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
             if value == .starting {
                 didSendTerminalEvent = false
                 mediaStartPTS = nil
+                droppedIncompleteVideoFrameCount = 0
+                lastIncompleteVideoFrameLog = .distantPast
             }
         }
     }
@@ -350,6 +354,9 @@ extension ScreenRecordingService: SCStreamOutput {
         }
 
         if type == .screen {
+            guard isCompleteVideoFrame(sampleBuffer) else {
+                return
+            }
             appendVideo(sampleBuffer, startTimeSeconds: startTimeSeconds)
             return
         }
@@ -396,6 +403,31 @@ extension ScreenRecordingService: SCStreamOutput {
         } catch {
             handleRealtimeWriterError(error)
         }
+    }
+
+    private func isCompleteVideoFrame(_ sampleBuffer: CMSampleBuffer) -> Bool {
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(
+            sampleBuffer,
+            createIfNecessary: false
+        ) as? [[SCStreamFrameInfo: Any]],
+              let rawStatus = attachments.first?[.status] as? Int,
+              let status = SCFrameStatus(rawValue: rawStatus) else {
+            return true
+        }
+
+        guard status == .complete else {
+            droppedIncompleteVideoFrameCount += 1
+            let now = Date()
+            if now.timeIntervalSince(lastIncompleteVideoFrameLog) >= 1 {
+                lastIncompleteVideoFrameLog = now
+                AppLog.debug(
+                    "Skipping incomplete ScreenCaptureKit frame status=\(rawStatus) dropped=\(droppedIncompleteVideoFrameCount)",
+                    category: .recording
+                )
+            }
+            return false
+        }
+        return true
     }
 
     private func appendMixedAudio(_ buffer: MixedRecordingAudioBuffer) {

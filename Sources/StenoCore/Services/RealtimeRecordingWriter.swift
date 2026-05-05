@@ -46,6 +46,7 @@ final class RealtimeRecordingWriter: @unchecked Sendable {
     private var didWriteAudio = false
     private var droppedVideoFrameCount = 0
     private var droppedAudioBufferCount = 0
+    private var preVideoAudioBufferCount = 0
     private var lastDropLog = Date.distantPast
 
     init(outputURL: URL, preset: VideoQualityPreset, audioFormat: AVAudioFormat) throws {
@@ -116,6 +117,11 @@ final class RealtimeRecordingWriter: @unchecked Sendable {
     func appendAudio(_ buffer: AVAudioPCMBuffer, startTimeSeconds: Double) throws {
         try lock.withLock {
             try ensureWritable()
+            guard didWriteVideo else {
+                preVideoAudioBufferCount += 1
+                logDropsIfNeeded()
+                return
+            }
             let timestamp = timestamp(for: startTimeSeconds)
             try startSessionIfNeeded(at: timestamp)
             guard audioInput.isReadyForMoreMediaData else {
@@ -164,7 +170,7 @@ final class RealtimeRecordingWriter: @unchecked Sendable {
             }
         }
         AppLog.info(
-            "Realtime writer finished duration=\(String(format: "%.2f", Date().timeIntervalSince(start)))s droppedVideo=\(droppedVideoFrameCount) droppedAudio=\(droppedAudioBufferCount)",
+            "Realtime writer finished duration=\(String(format: "%.2f", Date().timeIntervalSince(start)))s droppedVideo=\(droppedVideoFrameCount) droppedAudio=\(droppedAudioBufferCount) preVideoAudio=\(preVideoAudioBufferCount)",
             category: .recording
         )
     }
@@ -289,14 +295,39 @@ final class RealtimeRecordingWriter: @unchecked Sendable {
         guard dataStatus == noErr else {
             throw RealtimeRecordingWriterError.audioDataBufferCreationFailed(dataStatus)
         }
+        CMSampleBufferSetDataReady(sampleBuffer)
         return sampleBuffer
     }
 
     private func currentWriterError() -> any Error {
         if let error = writer.error {
-            return RealtimeRecordingWriterError.writerFailed(error.localizedDescription)
+            return RealtimeRecordingWriterError.writerFailed(Self.describe(error, writerStatus: writer.status))
         }
         return RealtimeRecordingWriterError.writerFailed("status=\(writer.status.rawValue)")
+    }
+
+    private static func describe(_ error: any Error, writerStatus: AVAssetWriter.Status) -> String {
+        let nsError = error as NSError
+        var details = [
+            error.localizedDescription,
+            "domain=\(nsError.domain)",
+            "code=\(nsError.code)",
+            "writerStatus=\(writerStatus.rawValue)"
+        ]
+        if let reason = nsError.localizedFailureReason, !reason.isEmpty {
+            details.append("reason=\(reason)")
+        }
+        if let recovery = nsError.localizedRecoverySuggestion, !recovery.isEmpty {
+            details.append("recovery=\(recovery)")
+        }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
+            details.append("underlyingDomain=\(underlying.domain)")
+            details.append("underlyingCode=\(underlying.code)")
+            if !underlying.localizedDescription.isEmpty {
+                details.append("underlying=\(underlying.localizedDescription)")
+            }
+        }
+        return details.joined(separator: " ")
     }
 
     private func logDropsIfNeeded() {
@@ -306,7 +337,7 @@ final class RealtimeRecordingWriter: @unchecked Sendable {
         }
         lastDropLog = now
         AppLog.warning(
-            "Realtime writer backpressure droppedVideo=\(droppedVideoFrameCount) droppedAudio=\(droppedAudioBufferCount)",
+            "Realtime writer backpressure droppedVideo=\(droppedVideoFrameCount) droppedAudio=\(droppedAudioBufferCount) preVideoAudio=\(preVideoAudioBufferCount)",
             category: .recording
         )
     }
