@@ -40,17 +40,15 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
     }
 
     private var stream: SCStream?
-    private var recordingOutput: SCRecordingOutput?
+    private var recordingWriter: RealtimeRecordingWriter?
+    private var audioMixer: RealtimeAudioMixer?
     private var eventHandler: EventHandler?
     private var audioHandler: AudioHandler?
-    private var audioSidecarWriter: RecordingAudioSidecarWriter?
-    private var completedAudioSidecars: RecordingAudioSidecars?
-    private var addedAudioOutputTypes: [SCStreamOutputType] = []
-    private var audioStartPTS: CMTime?
+    private var addedStreamOutputTypes: [SCStreamOutputType] = []
+    private var mediaStartPTS: CMTime?
     private var systemVolume = 1.0
     private var microphoneVolume = 2.0
     private var lifecycle: Lifecycle = .idle
-    private var didFinishOutput = false
     private var didSendTerminalEvent = false
     private let stateLock = NSLock()
 
@@ -70,8 +68,6 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
         setLifecycle(.starting)
         self.eventHandler = eventHandler
         self.audioHandler = audioHandler
-        self.completedAudioSidecars = nil
-        self.audioSidecarWriter = RecordingAudioSidecarWriter(outputURL: outputURL)
         self.systemVolume = Self.sanitizedVolume(systemVolume, range: 0...2)
         self.microphoneVolume = Self.sanitizedVolume(microphoneVolume, range: 0...4)
         AppLog.info(
@@ -94,6 +90,12 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
 
         try? FileManager.default.removeItem(at: outputURL)
         try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let audioMixer = RealtimeAudioMixer()
+        let recordingWriter = try RealtimeRecordingWriter(
+            outputURL: outputURL,
+            preset: preset,
+            audioFormat: audioMixer.outputFormat
+        )
 
         let configuration = SCStreamConfiguration()
         configuration.width = preset.width
@@ -111,32 +113,26 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
         let filter = SCContentFilter(display: display, excludingWindows: [])
         let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
 
-        let outputConfiguration = SCRecordingOutputConfiguration()
-        outputConfiguration.outputURL = outputURL
-        outputConfiguration.videoCodecType = .h264
-        outputConfiguration.outputFileType = .mp4
-
-        let recordingOutput = SCRecordingOutput(configuration: outputConfiguration, delegate: self)
         do {
-            try stream.addRecordingOutput(recordingOutput)
-        } catch {
-            AppLog.error("Failed to add recording output: \(error.localizedDescription)", category: .recording)
-            resetAfterStop()
-            throw RecordingError.failedToAddRecordingOutput(error.localizedDescription)
-        }
-
-        addAudioOutputs(to: stream)
-
-        self.stream = stream
-        self.recordingOutput = recordingOutput
-
-        do {
-            try await startCapture(stream)
+            try addStreamOutputs(to: stream)
         } catch {
             resetAfterStop()
             throw error
         }
+
+        self.stream = stream
+        self.recordingWriter = recordingWriter
+        self.audioMixer = audioMixer
+
+        do {
+            try await startCapture(stream)
+        } catch {
+            removeStreamOutputs(from: stream)
+            resetAfterStop()
+            throw error
+        }
         setLifecycle(.recording)
+        self.eventHandler?(.didStart)
         AppLog.info("ScreenCaptureKit stream started", category: .recording)
     }
 
@@ -153,7 +149,8 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
     public func stop() async throws {
         let shouldStop = beginStopping()
         let stream = self.stream
-        let recordingOutput = self.recordingOutput
+        let recordingWriter = self.recordingWriter
+        let audioMixer = self.audioMixer
 
         guard shouldStop, let stream else {
             return
@@ -165,27 +162,25 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
             AppLog.warning("Ignoring stopCapture failure during stop: \(error.localizedDescription)", category: .recording)
         }
 
-        if let recordingOutput, shouldRemoveRecordingOutput {
-            do {
-                try stream.removeRecordingOutput(recordingOutput)
-            } catch {
-                AppLog.warning("Ignoring removeRecordingOutput failure during stop: \(error.localizedDescription)", category: .recording)
-            }
-        }
+        removeStreamOutputs(from: stream)
 
-        removeAudioOutputs(from: stream)
-        completedAudioSidecars = audioSidecarWriter?.finish()
-        audioSidecarWriter = nil
+        do {
+            for mixedBuffer in audioMixer?.flush() ?? [] {
+                try recordingWriter?.appendAudio(
+                    mixedBuffer.pcmBuffer,
+                    startTimeSeconds: mixedBuffer.startTimeSeconds
+                )
+            }
+            try await recordingWriter?.finish()
+        } catch {
+            AppLog.error("Realtime writer finish failed: \(error.localizedDescription)", category: .recording)
+            resetAfterStop()
+            throw error
+        }
 
         AppLog.info("Recording stopped", category: .recording)
         emitTerminalEventIfNeeded(.didFinish)
         resetAfterStop()
-    }
-
-    public func takeCompletedAudioSidecars() -> RecordingAudioSidecars? {
-        let sidecars = completedAudioSidecars
-        completedAudioSidecars = nil
-        return sidecars
     }
 
     private func startCapture(_ stream: SCStream) async throws {
@@ -217,19 +212,12 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
         }
     }
 
-    private var shouldRemoveRecordingOutput: Bool {
-        stateLock.withLock {
-            !didFinishOutput
-        }
-    }
-
     private func setLifecycle(_ value: Lifecycle) {
         stateLock.withLock {
             lifecycle = value
             if value == .starting {
-                didFinishOutput = false
                 didSendTerminalEvent = false
-                audioStartPTS = nil
+                mediaStartPTS = nil
             }
         }
     }
@@ -249,16 +237,15 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
     private func resetAfterStop() {
         stateLock.withLock {
             lifecycle = .idle
-            didFinishOutput = false
             didSendTerminalEvent = false
         }
         stream = nil
-        recordingOutput = nil
+        recordingWriter?.cancel()
+        recordingWriter = nil
+        audioMixer = nil
         eventHandler = nil
         audioHandler = nil
-        audioSidecarWriter?.discard()
-        audioSidecarWriter = nil
-        addedAudioOutputTypes = []
+        addedStreamOutputTypes = []
     }
 
     private var isStopping: Bool {
@@ -276,7 +263,6 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
             switch event {
             case .didFinish:
                 lifecycle = .finished
-                didFinishOutput = true
             case .didFail:
                 lifecycle = .failed
             case .didStart:
@@ -289,11 +275,20 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
         }
     }
 
-    private func addAudioOutputs(to stream: SCStream) {
+    private func addStreamOutputs(to stream: SCStream) throws {
+        do {
+            try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: nil)
+            addedStreamOutputTypes.append(.screen)
+            AppLog.info("Added screen stream output for realtime recording", category: .recording)
+        } catch {
+            AppLog.error("Screen stream output unavailable: \(error.localizedDescription)", category: .recording)
+            throw RecordingError.failedToAddRecordingOutput(error.localizedDescription)
+        }
+
         do {
             try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: nil)
-            addedAudioOutputTypes.append(.audio)
-            AppLog.info("Added system audio stream output for transcription", category: .recording)
+            addedStreamOutputTypes.append(.audio)
+            AppLog.info("Added system audio stream output for realtime recording", category: .recording)
         } catch {
             AppLog.warning("System audio stream output unavailable: \(error.localizedDescription)", category: .recording)
         }
@@ -301,60 +296,39 @@ public final class ScreenRecordingService: NSObject, @unchecked Sendable {
         if #available(macOS 15.0, *) {
             do {
                 try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: nil)
-                addedAudioOutputTypes.append(.microphone)
-                AppLog.info("Added microphone stream output for transcription", category: .recording)
+                addedStreamOutputTypes.append(.microphone)
+                AppLog.info("Added microphone stream output for realtime recording", category: .recording)
             } catch {
                 AppLog.warning("Microphone stream output unavailable: \(error.localizedDescription)", category: .recording)
             }
         }
     }
 
-    private func removeAudioOutputs(from stream: SCStream) {
-        for type in addedAudioOutputTypes {
+    private func removeStreamOutputs(from stream: SCStream) {
+        for type in addedStreamOutputTypes {
             do {
                 try stream.removeStreamOutput(self, type: type)
             } catch {
                 AppLog.warning("Ignoring removeStreamOutput failure during stop: \(error.localizedDescription)", category: .recording)
             }
         }
-        addedAudioOutputTypes = []
+        addedStreamOutputTypes = []
     }
 
-    private func relativeAudioStartTime(for sampleBuffer: CMSampleBuffer) -> Double? {
+    private func relativeMediaStartTime(for sampleBuffer: CMSampleBuffer) -> Double? {
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         guard pts.isValid, pts.seconds.isFinite else {
             return nil
         }
         return stateLock.withLock {
-            if audioStartPTS == nil {
-                audioStartPTS = pts
+            if mediaStartPTS == nil {
+                mediaStartPTS = pts
             }
-            guard let audioStartPTS else {
+            guard let mediaStartPTS else {
                 return nil
             }
-            return max(0, CMTimeSubtract(pts, audioStartPTS).seconds)
+            return max(0, CMTimeSubtract(pts, mediaStartPTS).seconds)
         }
-    }
-}
-
-extension ScreenRecordingService: SCRecordingOutputDelegate {
-    public func recordingOutputDidStartRecording(_ recordingOutput: SCRecordingOutput) {
-        AppLog.info("Recording output did start", category: .recording)
-        eventHandler?(.didStart)
-    }
-
-    public func recordingOutput(_ recordingOutput: SCRecordingOutput, didFailWithError error: any Error) {
-        if isStopping {
-            AppLog.warning("Ignoring recording output failure during stop: \(error.localizedDescription)", category: .recording)
-            return
-        }
-        AppLog.error("Recording output failed: \(error.localizedDescription)", category: .recording)
-        emitTerminalEventIfNeeded(.didFail(error.localizedDescription))
-    }
-
-    public func recordingOutputDidFinishRecording(_ recordingOutput: SCRecordingOutput) {
-        AppLog.info("Recording output did finish", category: .recording)
-        emitTerminalEventIfNeeded(.didFinish)
     }
 }
 
@@ -371,7 +345,12 @@ extension ScreenRecordingService: SCStreamDelegate {
 
 extension ScreenRecordingService: SCStreamOutput {
     public func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard audioHandler != nil || audioSidecarWriter != nil else {
+        guard let startTimeSeconds = relativeMediaStartTime(for: sampleBuffer) else {
+            return
+        }
+
+        if type == .screen {
+            appendVideo(sampleBuffer, startTimeSeconds: startTimeSeconds)
             return
         }
 
@@ -385,10 +364,6 @@ extension ScreenRecordingService: SCStreamOutput {
             return
         }
 
-        guard let startTimeSeconds = relativeAudioStartTime(for: sampleBuffer) else {
-            return
-        }
-
         let duration = audioDuration(sampleBuffer: sampleBuffer)
         let rawLevel = AudioSampleBufferLevelAnalyzer.level(for: sampleBuffer)
         guard let pcmBuffer = copyPCMBuffer(from: sampleBuffer) else {
@@ -398,7 +373,9 @@ extension ScreenRecordingService: SCStreamOutput {
         let gain = volumeMultiplier(for: source)
         applyGain(gain, to: pcmBuffer)
         let level = RecordingAudioLevel(rms: rawLevel.rms * gain, peak: rawLevel.peak * gain)
-        audioSidecarWriter?.append(pcmBuffer, source: source, startTimeSeconds: startTimeSeconds)
+        for mixedBuffer in audioMixer?.append(pcmBuffer, source: source, startTimeSeconds: startTimeSeconds) ?? [] {
+            appendMixedAudio(mixedBuffer)
+        }
         audioHandler?(RecordingAudioBuffer(
             source: source,
             startTimeSeconds: startTimeSeconds,
@@ -406,6 +383,31 @@ extension ScreenRecordingService: SCStreamOutput {
             pcmBuffer: pcmBuffer,
             level: level
         ))
+    }
+
+    private func appendVideo(_ sampleBuffer: CMSampleBuffer, startTimeSeconds: Double) {
+        do {
+            try recordingWriter?.appendVideo(sampleBuffer, startTimeSeconds: startTimeSeconds)
+        } catch {
+            handleRealtimeWriterError(error)
+        }
+    }
+
+    private func appendMixedAudio(_ buffer: MixedRecordingAudioBuffer) {
+        do {
+            try recordingWriter?.appendAudio(buffer.pcmBuffer, startTimeSeconds: buffer.startTimeSeconds)
+        } catch {
+            handleRealtimeWriterError(error)
+        }
+    }
+
+    private func handleRealtimeWriterError(_ error: any Error) {
+        if isStopping {
+            AppLog.warning("Ignoring realtime writer error during stop: \(error.localizedDescription)", category: .recording)
+            return
+        }
+        AppLog.error("Realtime writer failed: \(error.localizedDescription)", category: .recording)
+        emitTerminalEventIfNeeded(.didFail(error.localizedDescription))
     }
 
     private func volumeMultiplier(for source: RecordingAudioSource) -> Double {
@@ -520,141 +522,6 @@ extension ScreenRecordingService: SCStreamOutput {
             return range.lowerBound
         }
         return min(max(value, range.lowerBound), range.upperBound)
-    }
-}
-
-private final class RecordingAudioSidecarWriter: @unchecked Sendable {
-    private struct SourceState {
-        var url: URL
-        var file: AVAudioFile
-        var format: AVAudioFormat
-        var firstStartTimeSeconds: Double
-        var frameCount: AVAudioFramePosition
-    }
-
-    private let lock = NSLock()
-    private let fileManager: FileManager
-    private let directory: URL
-    private let baseName: String
-    private var states: [RecordingAudioSource: SourceState] = [:]
-    private var isFinished = false
-
-    init(outputURL: URL, fileManager: FileManager = .default) {
-        self.fileManager = fileManager
-        directory = fileManager.temporaryDirectory.appending(
-            path: "steno-audio-\(UUID().uuidString)",
-            directoryHint: .isDirectory
-        )
-        baseName = outputURL.deletingPathExtension().lastPathComponent
-    }
-
-    func append(_ buffer: AVAudioPCMBuffer, source: RecordingAudioSource, startTimeSeconds: Double) {
-        lock.withLock {
-            guard !isFinished else {
-                return
-            }
-
-            do {
-                var state = try state(for: source, buffer: buffer, startTimeSeconds: startTimeSeconds)
-                guard Self.format(state.format, matches: buffer.format) else {
-                    AppLog.warning(
-                        "Skipping \(source.rawValue) sidecar audio with changed format old=\(Self.describe(state.format)) new=\(Self.describe(buffer.format))",
-                        category: .recording
-                    )
-                    return
-                }
-                try state.file.write(from: buffer)
-                state.frameCount += AVAudioFramePosition(buffer.frameLength)
-                states[source] = state
-            } catch {
-                AppLog.warning("Failed to write \(source.rawValue) sidecar audio: \(error.localizedDescription)", category: .recording)
-            }
-        }
-    }
-
-    func finish() -> RecordingAudioSidecars? {
-        lock.withLock {
-            isFinished = true
-            let sidecars = RecordingAudioSidecars(
-                system: sidecarFile(for: .system),
-                microphone: sidecarFile(for: .microphone),
-                temporaryDirectory: directory
-            )
-            states = [:]
-            guard sidecars.hasAudio else {
-                try? fileManager.removeItem(at: directory)
-                return nil
-            }
-            AppLog.info(
-                "Finished normalized audio sidecars system=\(sidecars.system?.url.lastPathComponent ?? "none") microphone=\(sidecars.microphone?.url.lastPathComponent ?? "none")",
-                category: .recording
-            )
-            return sidecars
-        }
-    }
-
-    func discard() {
-        lock.withLock {
-            isFinished = true
-            states = [:]
-            try? fileManager.removeItem(at: directory)
-        }
-    }
-
-    private func state(
-        for source: RecordingAudioSource,
-        buffer: AVAudioPCMBuffer,
-        startTimeSeconds: Double
-    ) throws -> SourceState {
-        if let state = states[source] {
-            return state
-        }
-
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        let url = directory.appending(path: "\(baseName)_\(source.rawValue).caf")
-        try? fileManager.removeItem(at: url)
-        let file = try AVAudioFile(
-            forWriting: url,
-            settings: buffer.format.settings,
-            commonFormat: buffer.format.commonFormat,
-            interleaved: buffer.format.isInterleaved
-        )
-        AppLog.info(
-            "Started normalized \(source.rawValue) audio sidecar format=\(Self.describe(buffer.format))",
-            category: .recording
-        )
-        return SourceState(
-            url: url,
-            file: file,
-            format: buffer.format,
-            firstStartTimeSeconds: max(0, startTimeSeconds),
-            frameCount: 0
-        )
-    }
-
-    private func sidecarFile(for source: RecordingAudioSource) -> RecordingAudioSidecarFile? {
-        guard let state = states[source],
-              state.frameCount > 0,
-              fileManager.fileExists(atPath: state.url.path) else {
-            return nil
-        }
-
-        return RecordingAudioSidecarFile(
-            url: state.url,
-            startOffsetSeconds: state.firstStartTimeSeconds,
-            durationSeconds: Double(state.frameCount) / state.format.sampleRate
-        )
-    }
-
-    private static func format(_ lhs: AVAudioFormat, matches rhs: AVAudioFormat) -> Bool {
-        lhs.commonFormat == rhs.commonFormat &&
-            lhs.sampleRate == rhs.sampleRate &&
-            lhs.channelCount == rhs.channelCount &&
-            lhs.isInterleaved == rhs.isInterleaved
-    }
-
-    private static func describe(_ format: AVAudioFormat) -> String {
-        "\(Int(format.sampleRate))Hz \(format.channelCount)ch \(format.commonFormat) interleaved=\(format.isInterleaved)"
     }
 }
 

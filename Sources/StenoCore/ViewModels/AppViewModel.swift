@@ -112,7 +112,6 @@ public final class AppViewModel {
     @ObservationIgnored private let modelCatalogService: AIModelCatalogService
     @ObservationIgnored private let speechAvailabilityService: NativeSpeechAvailabilityService
     @ObservationIgnored private let speechReadinessService: any NativeSpeechReadinessChecking
-    @ObservationIgnored private let audioPostProcessor: AudioPostProcessor
     @ObservationIgnored private var recorder: ScreenRecordingService?
     @ObservationIgnored private var transcriptionCoordinator: ContinuousSpeechCoordinator?
     @ObservationIgnored private var recordingTimerTask: Task<Void, Never>?
@@ -127,8 +126,7 @@ public final class AppViewModel {
         aiClient: AIProcessingClient = AIProcessingClient(),
         modelCatalogService: AIModelCatalogService = AIModelCatalogService(),
         speechAvailabilityService: NativeSpeechAvailabilityService = NativeSpeechAvailabilityService(),
-        speechReadinessService: any NativeSpeechReadinessChecking = NativeSpeechService(),
-        audioPostProcessor: AudioPostProcessor = AudioPostProcessor()
+        speechReadinessService: any NativeSpeechReadinessChecking = NativeSpeechService()
     ) {
         self.configStore = configStore
         self.permissionsService = permissionsService
@@ -137,7 +135,6 @@ public final class AppViewModel {
         self.modelCatalogService = modelCatalogService
         self.speechAvailabilityService = speechAvailabilityService
         self.speechReadinessService = speechReadinessService
-        self.audioPostProcessor = audioPostProcessor
 
         var loadedConfig = AppConfig.default
         var didFindExistingConfig = false
@@ -585,12 +582,9 @@ public final class AppViewModel {
         statusMessage = "Finalizing recording"
 
         do {
-            let activeRecorder = recorder
-            try await activeRecorder?.stop()
-            let audioSidecars = activeRecorder?.takeCompletedAudioSidecars()
+            try await recorder?.stop()
             if let baseName = currentRecordingBaseName, let url = currentRecordingURL {
                 if await recordedFileExists(url) {
-                    await normalizeRecordingAudioIfNeeded(videoURL: url, sidecars: audioSidecars)
                     if let transcriptionCoordinator {
                         do {
                             let transcript = try await transcriptionCoordinator.finish()
@@ -642,49 +636,6 @@ public final class AppViewModel {
         currentRecordingBaseName = nil
         currentRecordingURL = nil
         refreshSessions()
-    }
-
-    private func normalizeRecordingAudioIfNeeded(videoURL: URL, sidecars: RecordingAudioSidecars?) async {
-        guard let sidecars else {
-            AppLog.warning("No normalized audio sidecars were produced for recording", category: .recording)
-            return
-        }
-        defer {
-            sidecars.cleanup()
-        }
-        guard sidecars.hasAudio else {
-            AppLog.warning("Normalized audio sidecars are empty; keeping ScreenCaptureKit audio", category: .recording)
-            return
-        }
-
-        let temporaryOutputURL = videoURL.deletingPathExtension()
-            .appendingPathExtension("normalized-\(UUID().uuidString)")
-            .appendingPathExtension("mp4")
-        do {
-            try await audioPostProcessor.replaceAudioWithSidecars(
-                videoURL: videoURL,
-                sidecars: sidecars,
-                outputURL: temporaryOutputURL
-            )
-            let originalBackupURL = videoURL.deletingPathExtension()
-                .appendingPathExtension("original-audio-\(UUID().uuidString)")
-                .appendingPathExtension("mp4")
-            try FileManager.default.moveItem(at: videoURL, to: originalBackupURL)
-            do {
-                try FileManager.default.moveItem(at: temporaryOutputURL, to: videoURL)
-                try? FileManager.default.removeItem(at: originalBackupURL)
-                AppLog.info("Replaced recording audio with normalized sidecar mix", category: .recording)
-            } catch {
-                try? FileManager.default.moveItem(at: originalBackupURL, to: videoURL)
-                throw error
-            }
-        } catch {
-            try? FileManager.default.removeItem(at: temporaryOutputURL)
-            AppLog.warning(
-                "Keeping original recording audio because normalized mux failed: \(error.localizedDescription)",
-                category: .recording
-            )
-        }
     }
 
     public func checkAIConnection() {
