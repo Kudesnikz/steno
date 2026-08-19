@@ -5,7 +5,7 @@ MODE="${1:-run}"
 APP_NAME="Steno"
 BUNDLE_ID="com.sergeygalay.steno"
 MIN_SYSTEM_VERSION="15.0"
-APP_VERSION="2.0.0"
+APP_VERSION="0.2.0"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
