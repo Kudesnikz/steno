@@ -140,7 +140,7 @@ swift test
 
 ```text
 dist/Steno.app
-dist/Steno-2.1.0-universal.dmg
+dist/Steno-2.2.0-universal.dmg
 ```
 
 ### Логи

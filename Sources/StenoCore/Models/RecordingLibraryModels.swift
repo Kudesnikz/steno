@@ -30,6 +30,12 @@ public struct RemoteMediaPart: Codable, Identifiable, Hashable, Sendable {
     public var state: String
     public var createdAt: Date
     public var expiresAt: Date
+    /// Stable local attachment identity used to reuse unchanged files independently.
+    public var attachmentID: String?
+    /// `video_system_audio` or `microphone_audio` for segmented recordings.
+    public var role: String?
+    public var segmentIndex: Int?
+    public var sourceFingerprint: String?
 
     public init(
         id: String = UUID().uuidString,
@@ -42,7 +48,11 @@ public struct RemoteMediaPart: Codable, Identifiable, Hashable, Sendable {
         sizeBytes: Int64,
         state: String = "ACTIVE",
         createdAt: Date = Date(),
-        expiresAt: Date
+        expiresAt: Date,
+        attachmentID: String? = nil,
+        role: String? = nil,
+        segmentIndex: Int? = nil,
+        sourceFingerprint: String? = nil
     ) {
         self.id = id
         self.index = index
@@ -55,6 +65,35 @@ public struct RemoteMediaPart: Codable, Identifiable, Hashable, Sendable {
         self.state = state
         self.createdAt = createdAt
         self.expiresAt = expiresAt
+        self.attachmentID = attachmentID
+        self.role = role
+        self.segmentIndex = segmentIndex
+        self.sourceFingerprint = sourceFingerprint
+    }
+}
+
+public struct RemoteUploadSession: Codable, Hashable, Sendable {
+    public var attachmentID: String
+    public var sourceFingerprint: String
+    public var uploadURL: String
+    public var uploadedBytes: Int64
+    public var totalBytes: Int64
+    public var updatedAt: Date
+
+    public init(
+        attachmentID: String,
+        sourceFingerprint: String,
+        uploadURL: String,
+        uploadedBytes: Int64,
+        totalBytes: Int64,
+        updatedAt: Date = Date()
+    ) {
+        self.attachmentID = attachmentID
+        self.sourceFingerprint = sourceFingerprint
+        self.uploadURL = uploadURL
+        self.uploadedBytes = uploadedBytes
+        self.totalBytes = totalBytes
+        self.updatedAt = updatedAt
     }
 }
 
@@ -66,6 +105,8 @@ public struct RemoteMediaManifest: Codable, Hashable, Sendable {
     /// The number of parts that must exist before this manifest can be reused.
     /// `nil` is reserved for manifests written by builds predating resumable manifests.
     public var expectedPartCount: Int?
+    /// In-progress resumable sessions. Optional for schema compatibility.
+    public var pendingUploads: [RemoteUploadSession]?
     public var updatedAt: Date
 
     public init(
@@ -74,6 +115,7 @@ public struct RemoteMediaManifest: Codable, Hashable, Sendable {
         baseURLFingerprint: String,
         parts: [RemoteMediaPart],
         expectedPartCount: Int? = nil,
+        pendingUploads: [RemoteUploadSession]? = nil,
         updatedAt: Date = Date()
     ) {
         self.sourceFingerprint = sourceFingerprint
@@ -81,11 +123,18 @@ public struct RemoteMediaManifest: Codable, Hashable, Sendable {
         self.baseURLFingerprint = baseURLFingerprint
         self.parts = parts.sorted { $0.index < $1.index }
         self.expectedPartCount = expectedPartCount
+        self.pendingUploads = pendingUploads
         self.updatedAt = updatedAt
     }
 
     public var isComplete: Bool {
-        !parts.isEmpty && (expectedPartCount == nil || parts.count == expectedPartCount)
+        !parts.isEmpty &&
+            (expectedPartCount == nil || parts.count == expectedPartCount) &&
+            pendingUploads?.isEmpty != false
+    }
+
+    public var isReadyForUse: Bool {
+        isComplete && parts.allSatisfy { $0.state.uppercased() == "ACTIVE" }
     }
 
     public func isReusable(
@@ -98,14 +147,50 @@ public struct RemoteMediaManifest: Codable, Hashable, Sendable {
         self.sourceFingerprint == sourceFingerprint &&
             self.credentialFingerprint == credentialFingerprint &&
             self.baseURLFingerprint == baseURLFingerprint &&
-            isComplete &&
+            isReadyForUse &&
             parts.allSatisfy {
-                $0.state.uppercased() == "ACTIVE" && $0.expiresAt.timeIntervalSince(now) > safetyMargin
+                $0.expiresAt.timeIntervalSince(now) > safetyMargin
             }
     }
 
     public var earliestExpiration: Date? {
         parts.map(\.expiresAt).min()
+    }
+
+    public func reusablePart(
+        attachmentID: String,
+        sourceFingerprint: String,
+        position: Int,
+        aggregateSourceFingerprint: String,
+        now: Date = Date(),
+        safetyMargin: TimeInterval = 300
+    ) -> RemoteMediaPart? {
+        matchingPart(
+            attachmentID: attachmentID,
+            sourceFingerprint: sourceFingerprint,
+            position: position,
+            aggregateSourceFingerprint: aggregateSourceFingerprint,
+            now: now,
+            safetyMargin: safetyMargin
+        ).flatMap { $0.state.uppercased() == "ACTIVE" ? $0 : nil }
+    }
+
+    public func matchingPart(
+        attachmentID: String,
+        sourceFingerprint: String,
+        position: Int,
+        aggregateSourceFingerprint: String,
+        now: Date = Date(),
+        safetyMargin: TimeInterval = 300
+    ) -> RemoteMediaPart? {
+        parts.first { part in
+            let identityMatches = part.attachmentID.map { $0 == attachmentID }
+                ?? (self.sourceFingerprint == aggregateSourceFingerprint && part.index == position)
+            let fingerprintMatches = part.sourceFingerprint.map { $0 == sourceFingerprint } ??
+                (self.sourceFingerprint == aggregateSourceFingerprint)
+            return identityMatches && fingerprintMatches &&
+                part.expiresAt.timeIntervalSince(now) > safetyMargin
+        }
     }
 }
 

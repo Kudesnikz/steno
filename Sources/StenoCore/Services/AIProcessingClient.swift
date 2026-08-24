@@ -96,6 +96,9 @@ public actor AIProcessingClient {
     public func generateReport(
         videoURL: URL,
         audioURLs: [URL],
+        recordingSegments: [RecordingSegment] = [],
+        mediaDirectory: URL? = nil,
+        useLowMediaResolution: Bool = false,
         config: AppConfig,
         agent: Agent,
         existingRemoteMedia: RemoteMediaManifest? = nil,
@@ -105,6 +108,23 @@ public actor AIProcessingClient {
         let model = try selectedAllowedModel(config: config)
         try requireCredentials(config: config, providerID: model.providerID)
         try await verifyDynamicVideoCapabilityIfNeeded(config: config, model: model)
+        if !recordingSegments.isEmpty {
+            guard model.providerID == .gemini, let mediaDirectory else {
+                throw AIClientError.unsupportedModel(providerID: model.providerID, modelID: model.modelID)
+            }
+            return try await geminiClient.generateReport(
+                videoURL: videoURL,
+                audioURLs: audioURLs,
+                recordingSegments: recordingSegments,
+                mediaDirectory: mediaDirectory,
+                useLowMediaResolution: useLowMediaResolution,
+                config: config,
+                agent: agent,
+                existingRemoteMedia: existingRemoteMedia,
+                remoteMediaUpdate: remoteMediaUpdate,
+                progress: progress
+            )
+        }
         let preparedMedia = try await mediaPreparationService.prepareVideoIfNeeded(
             videoURL: videoURL,
             providerID: model.providerID,

@@ -1,5 +1,79 @@
 import Foundation
 
+public enum RecordingStopReason: String, Codable, Hashable, Sendable {
+    case user
+    case durationLimit = "duration_limit"
+    case sizeLimit = "size_limit"
+    case partLimit = "part_limit"
+    case failure
+}
+
+public struct RecordingSegment: Codable, Identifiable, Hashable, Sendable {
+    public var id: String
+    public var index: Int
+    public var startSeconds: Double
+    public var durationSeconds: Double
+    public var videoPath: String
+    public var microphoneAudioPath: String?
+    public var videoSizeBytes: Int64
+    public var microphoneSizeBytes: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case index
+        case startSeconds = "start_seconds"
+        case durationSeconds = "duration_seconds"
+        case videoPath = "video_path"
+        case microphoneAudioPath = "microphone_audio_path"
+        case videoSizeBytes = "video_size_bytes"
+        case microphoneSizeBytes = "microphone_size_bytes"
+    }
+
+    public init(
+        id: String = UUID().uuidString,
+        index: Int,
+        startSeconds: Double,
+        durationSeconds: Double,
+        videoPath: String,
+        microphoneAudioPath: String?,
+        videoSizeBytes: Int64,
+        microphoneSizeBytes: Int64
+    ) {
+        self.id = id
+        self.index = index
+        self.startSeconds = startSeconds
+        self.durationSeconds = durationSeconds
+        self.videoPath = videoPath
+        self.microphoneAudioPath = microphoneAudioPath
+        self.videoSizeBytes = videoSizeBytes
+        self.microphoneSizeBytes = microphoneSizeBytes
+    }
+
+    public var totalSizeBytes: Int64 { videoSizeBytes + microphoneSizeBytes }
+}
+
+public struct SegmentedRecordingMetadataUpdate: Hashable, Sendable {
+    public var duration: Int
+    public var quality: String
+    public var profile: SegmentedRecordingLimitProfile
+    public var stopReason: RecordingStopReason?
+    public var segments: [RecordingSegment]
+
+    public init(
+        duration: Int,
+        quality: String,
+        profile: SegmentedRecordingLimitProfile,
+        stopReason: RecordingStopReason?,
+        segments: [RecordingSegment]
+    ) {
+        self.duration = duration
+        self.quality = quality
+        self.profile = profile
+        self.stopReason = stopReason
+        self.segments = segments
+    }
+}
+
 public struct RecordingInfo: Codable, Hashable, Sendable {
     public var durationSeconds: Int
     public var videoQuality: String
@@ -7,6 +81,10 @@ public struct RecordingInfo: Codable, Hashable, Sendable {
     public var microphoneAudioPath: String
     public var videoSizeMB: Double
     public var microphoneSizeMB: Double
+    public var segmented: Bool
+    public var limitProfileID: String?
+    public var stopReason: RecordingStopReason?
+    public var segments: [RecordingSegment]
 
     enum CodingKeys: String, CodingKey {
         case durationSeconds = "duration_seconds"
@@ -15,6 +93,10 @@ public struct RecordingInfo: Codable, Hashable, Sendable {
         case microphoneAudioPath = "mic_audio_path"
         case videoSizeMB = "video_size_mb"
         case microphoneSizeMB = "mic_size_mb"
+        case segmented
+        case limitProfileID = "limit_profile"
+        case stopReason = "stop_reason"
+        case segments
     }
 
     public init(
@@ -23,7 +105,11 @@ public struct RecordingInfo: Codable, Hashable, Sendable {
         videoPath: String,
         microphoneAudioPath: String,
         videoSizeMB: Double,
-        microphoneSizeMB: Double
+        microphoneSizeMB: Double,
+        segmented: Bool = false,
+        limitProfileID: String? = nil,
+        stopReason: RecordingStopReason? = nil,
+        segments: [RecordingSegment] = []
     ) {
         self.durationSeconds = durationSeconds
         self.videoQuality = videoQuality
@@ -31,6 +117,24 @@ public struct RecordingInfo: Codable, Hashable, Sendable {
         self.microphoneAudioPath = microphoneAudioPath
         self.videoSizeMB = videoSizeMB
         self.microphoneSizeMB = microphoneSizeMB
+        self.segmented = segmented
+        self.limitProfileID = limitProfileID
+        self.stopReason = stopReason
+        self.segments = segments.sorted { $0.index < $1.index }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        durationSeconds = try container.decodeIfPresent(Int.self, forKey: .durationSeconds) ?? 0
+        videoQuality = try container.decodeIfPresent(String.self, forKey: .videoQuality) ?? ""
+        videoPath = try container.decodeIfPresent(String.self, forKey: .videoPath) ?? ""
+        microphoneAudioPath = try container.decodeIfPresent(String.self, forKey: .microphoneAudioPath) ?? ""
+        videoSizeMB = try container.decodeIfPresent(Double.self, forKey: .videoSizeMB) ?? 0
+        microphoneSizeMB = try container.decodeIfPresent(Double.self, forKey: .microphoneSizeMB) ?? 0
+        segmented = try container.decodeIfPresent(Bool.self, forKey: .segmented) ?? false
+        limitProfileID = try container.decodeIfPresent(String.self, forKey: .limitProfileID)
+        stopReason = try container.decodeIfPresent(RecordingStopReason.self, forKey: .stopReason)
+        segments = try container.decodeIfPresent([RecordingSegment].self, forKey: .segments)?.sorted { $0.index < $1.index } ?? []
     }
 }
 
@@ -159,7 +263,7 @@ public struct SessionMetadata: Codable, Hashable, Sendable {
     }
 
     public init(
-        schemaVersion: Int? = 2,
+        schemaVersion: Int? = 3,
         name: String? = nil,
         createdAt: String? = nil,
         folderID: String? = nil,
@@ -215,6 +319,40 @@ public struct MeetingSession: Identifiable, Hashable, Sendable {
 }
 
 public extension MeetingSession {
+    var recordingSegments: [RecordingSegment] {
+        if let segments = metadata.recording?.segments, !segments.isEmpty {
+            return segments.sorted { $0.index < $1.index }
+        }
+        let videoSize = (try? videoURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+        let micURL = audioURLs.first
+        let micSize = micURL.flatMap { try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize }.map(Int64.init) ?? 0
+        return [RecordingSegment(
+            index: 0,
+            startSeconds: 0,
+            durationSeconds: Double(metadata.recording?.durationSeconds ?? 0),
+            videoPath: videoURL.lastPathComponent,
+            microphoneAudioPath: micURL?.lastPathComponent,
+            videoSizeBytes: videoSize,
+            microphoneSizeBytes: micSize
+        )]
+    }
+
+    var isSegmentedRecording: Bool { metadata.recording?.segmented == true && recordingSegments.count > 0 }
+
+    var segmentedLimitProfile: SegmentedRecordingLimitProfile? {
+        metadata.recording?.limitProfileID.flatMap(SegmentedRecordingLimitProfile.init(rawValue:))
+    }
+
+    var segmentVideoURLs: [URL] {
+        recordingSegments.map { baseURL.deletingLastPathComponent().appending(path: $0.videoPath) }
+    }
+
+    var segmentMicrophoneURLs: [URL] {
+        recordingSegments.compactMap { segment in
+            segment.microphoneAudioPath.map { baseURL.deletingLastPathComponent().appending(path: $0) }
+        }
+    }
+
     var displayName: String {
         if let name = metadata.name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return name
@@ -231,7 +369,8 @@ public extension MeetingSession {
     }
 
     var totalSizeMB: Double {
-        let urls = [videoURL, metadataURL] + audioURLs + Array(reportURLsByAgentID.values)
+        let mediaURLs = isSegmentedRecording ? segmentVideoURLs + segmentMicrophoneURLs : [videoURL] + audioURLs
+        let urls = mediaURLs + [metadataURL] + Array(reportURLsByAgentID.values)
         let totalBytes = urls.reduce(Int64(0)) { result, url in
             let value = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
             return result + value

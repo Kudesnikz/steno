@@ -86,6 +86,7 @@ public final class AppViewModel {
     public var isProcessing = false
     public var isCheckingAIConnection = false
     public var recordingDuration = 0
+    public var recordingRemainingDuration: Int?
     public var statusMessage: String?
     public var errorMessage: String?
     public var aiConnectionCheckStatus: AIConnectionCheckStatus?
@@ -112,11 +113,15 @@ public final class AppViewModel {
     @ObservationIgnored private let importService: RecordingImportService
     @ObservationIgnored private let remoteCleanupStore: RemoteCleanupStore
     @ObservationIgnored private var recorder: ScreenRecordingService?
+    @ObservationIgnored private var segmentedRecorder: SegmentedScreenRecordingService?
     @ObservationIgnored private var recordingTimerTask: Task<Void, Never>?
     @ObservationIgnored private var aiTask: Task<Void, Never>?
     @ObservationIgnored private var chatTask: Task<Void, Never>?
     @ObservationIgnored private var currentRecordingBaseName: String?
     @ObservationIgnored private var currentRecordingURL: URL?
+    @ObservationIgnored private var currentRecordingSegments: [RecordingSegment] = []
+    @ObservationIgnored private var activeRecordingLimitProfile: SegmentedRecordingLimitProfile?
+    @ObservationIgnored private var shouldQuitAfterRecordingFinalizes = false
 
     public init(
         configStore: ConfigStore = ConfigStore(),
@@ -326,12 +331,14 @@ public final class AppViewModel {
     public func toggleMicrophoneCapture() {
         config.microphoneEnabled.toggle()
         recorder?.setMicrophoneEnabled(config.microphoneEnabled)
+        segmentedRecorder?.setMicrophoneEnabled(config.microphoneEnabled)
         persistAudioCaptureState()
     }
 
     public func toggleSystemAudioCapture() {
         config.systemAudioEnabled.toggle()
         recorder?.setSystemAudioEnabled(config.systemAudioEnabled)
+        segmentedRecorder?.setSystemAudioEnabled(config.systemAudioEnabled)
         persistAudioCaptureState()
     }
 
@@ -359,6 +366,16 @@ public final class AppViewModel {
 
     public func quitApplication() {
         AppLog.info("Application quit requested", category: .ui)
+        if isRecording || isFinalizingRecording {
+            shouldQuitAfterRecordingFinalizes = true
+            statusMessage = "Finalizing recording before quit"
+            if isRecording {
+                Task { [weak self] in
+                    await self?.stopRecording(reason: .user)
+                }
+            }
+            return
+        }
         ApplicationLifecycleService.quit()
     }
 
@@ -584,30 +601,23 @@ public final class AppViewModel {
         let timestamp = identity.timestamp
         let baseName = identity.baseName
         let outputURL = saveURL.appending(path: "\(baseName).mp4")
+        let usesSegmentedRecording = config.experimentalSegmentedRecordingEnabled
+        let limitProfile = config.segmentedRecordingLimitProfile
 
         do {
             try FileManager.default.createDirectory(at: saveURL, withIntermediateDirectories: true)
-
-            let recorder = ScreenRecordingService()
-            self.recorder = recorder
             currentRecordingBaseName = baseName
-            currentRecordingURL = outputURL
+            currentRecordingURL = usesSegmentedRecording
+                ? saveURL.appending(path: "\(baseName)_part_000.mp4")
+                : outputURL
+            currentRecordingSegments = []
+            activeRecordingLimitProfile = usesSegmentedRecording ? limitProfile : nil
             recordingDuration = 0
+            recordingRemainingDuration = usesSegmentedRecording ? limitProfile.maximumDurationSeconds : nil
             AppLog.info(
-                "Recording requested baseName=\(baseName) displayID=\(config.videoDeviceIndex) displayName=\(config.videoDeviceName)",
+                "Recording requested baseName=\(baseName) segmented=\(usesSegmentedRecording) displayID=\(config.videoDeviceIndex) displayName=\(config.videoDeviceName)",
                 category: .recording
             )
-
-            try await recorder.start(
-                outputURL: outputURL,
-                preset: config.preset(),
-                selectedDisplayID: config.videoDeviceIndex,
-                audioState: recordingAudioState
-            ) { [weak self] event in
-                Task { @MainActor in
-                    self?.handleRecorderEvent(event)
-                }
-            }
             try sessionStore.createInitialMetadata(
                 baseName: baseName,
                 displayName: timestamp.replacingOccurrences(of: "_", with: " "),
@@ -615,8 +625,39 @@ public final class AppViewModel {
                 folderID: nil,
                 source: .captured
             )
+            if usesSegmentedRecording {
+                let segmentedRecorder = SegmentedScreenRecordingService()
+                self.segmentedRecorder = segmentedRecorder
+                try await segmentedRecorder.start(
+                    outputDirectory: saveURL,
+                    baseName: baseName,
+                    preset: config.preset(),
+                    profile: limitProfile,
+                    selectedDisplayID: config.videoDeviceIndex,
+                    audioState: recordingAudioState
+                ) { [weak self] event in
+                    Task { @MainActor in
+                        self?.handleSegmentedRecorderEvent(event)
+                    }
+                }
+            } else {
+                let recorder = ScreenRecordingService()
+                self.recorder = recorder
+                try await recorder.start(
+                    outputURL: outputURL,
+                    preset: config.preset(),
+                    selectedDisplayID: config.videoDeviceIndex,
+                    audioState: recordingAudioState
+                ) { [weak self] event in
+                    Task { @MainActor in
+                        self?.handleRecorderEvent(event)
+                    }
+                }
+            }
             isRecording = true
-            statusMessage = "Recording started"
+            statusMessage = usesSegmentedRecording
+                ? "Segmented recording started · \(limitProfile.settingsTitle)"
+                : "Legacy recording started"
             startRecordingTimer()
         } catch {
             recordingTimerTask?.cancel()
@@ -624,11 +665,18 @@ public final class AppViewModel {
             if let recorder {
                 try? await recorder.stop()
             }
+            if let segmentedRecorder {
+                _ = try? await segmentedRecorder.stop(reason: .failure)
+            }
             isRecording = false
             recorder = nil
-            try? FileManager.default.removeItem(at: outputURL)
+            segmentedRecorder = nil
+            try? sessionStore.deleteArtifacts(baseName: baseName)
             currentRecordingBaseName = nil
             currentRecordingURL = nil
+            currentRecordingSegments = []
+            activeRecordingLimitProfile = nil
+            recordingRemainingDuration = nil
             errorMessage = "Start recording failed: \(error.localizedDescription)"
             AppLog.error("Start recording failed: \(error.localizedDescription)", category: .recording)
             refreshSessions()
@@ -636,6 +684,10 @@ public final class AppViewModel {
     }
 
     public func stopRecording() async {
+        await stopRecording(reason: .user)
+    }
+
+    private func stopRecording(reason: RecordingStopReason) async {
         guard isRecording, !isFinalizingRecording else {
             return
         }
@@ -646,33 +698,78 @@ public final class AppViewModel {
         statusMessage = "Finalizing recording"
 
         do {
-            try await recorder?.stop()
-            if let baseName = currentRecordingBaseName, let url = currentRecordingURL {
-                if await recordedFileExists(url) {
-                    try sessionStore.updateRecordingMetadata(
-                        baseName: baseName,
-                        duration: recordingDuration,
+            if let segmentedRecorder,
+               let baseName = currentRecordingBaseName,
+               let profile = activeRecordingLimitProfile {
+                let result = try await segmentedRecorder.stop(reason: reason)
+                currentRecordingSegments = result.segments
+                guard !result.segments.isEmpty else {
+                    throw RecordingError.recordingFailed("Segmented recorder returned no completed parts.")
+                }
+                try sessionStore.updateSegmentedRecordingMetadata(
+                    baseName: baseName,
+                    update: SegmentedRecordingMetadataUpdate(
+                        duration: Int(result.durationSeconds.rounded()),
                         quality: config.videoQuality,
-                        videoURL: url
+                        profile: profile,
+                        stopReason: result.stopReason,
+                        segments: result.segments
                     )
-                } else {
-                    try? sessionStore.deleteArtifacts(baseName: baseName)
-                    AppLog.warning("Recording stopped without output file; cleaned artifacts for \(baseName)", category: .recording)
+                )
+                recordingDuration = Int(result.durationSeconds.rounded())
+            } else {
+                try await recorder?.stop()
+                if let baseName = currentRecordingBaseName, let url = currentRecordingURL {
+                    if await recordedFileExists(url) {
+                        try sessionStore.updateRecordingMetadata(
+                            baseName: baseName,
+                            duration: recordingDuration,
+                            quality: config.videoQuality,
+                            videoURL: url
+                        )
+                    } else {
+                        try? sessionStore.deleteArtifacts(baseName: baseName)
+                        AppLog.warning("Recording stopped without output file; cleaned artifacts for \(baseName)", category: .recording)
+                    }
                 }
             }
-            statusMessage = "Recording stopped"
-            errorMessage = nil
-            AppLog.info("Recording stop completed", category: .recording)
+            statusMessage = reason == .user ? "Recording stopped" : "Recording stopped at configured limit"
+            if reason != .failure {
+                errorMessage = nil
+            }
+            AppLog.info("Recording stop completed reason=\(reason.rawValue)", category: .recording)
         } catch {
+            if let baseName = currentRecordingBaseName,
+               let profile = activeRecordingLimitProfile,
+               !currentRecordingSegments.isEmpty {
+                try? sessionStore.updateSegmentedRecordingMetadata(
+                    baseName: baseName,
+                    update: SegmentedRecordingMetadataUpdate(
+                        duration: recordingDuration,
+                        quality: config.videoQuality,
+                        profile: profile,
+                        stopReason: .failure,
+                        segments: currentRecordingSegments
+                    )
+                )
+            }
             errorMessage = "Stop recording failed: \(error.localizedDescription)"
             AppLog.error("Stop recording failed: \(error.localizedDescription)", category: .recording)
         }
 
         recorder = nil
+        segmentedRecorder = nil
         isFinalizingRecording = false
         currentRecordingBaseName = nil
         currentRecordingURL = nil
+        currentRecordingSegments = []
+        activeRecordingLimitProfile = nil
+        recordingRemainingDuration = nil
         refreshSessions()
+        if shouldQuitAfterRecordingFinalizes {
+            shouldQuitAfterRecordingFinalizes = false
+            ApplicationLifecycleService.quit()
+        }
     }
 
     public func checkAIConnection() {
@@ -812,6 +909,9 @@ public final class AppViewModel {
                 let result = try await self.aiClient.generateReport(
                     videoURL: session.videoURL,
                     audioURLs: session.audioURLs,
+                    recordingSegments: session.isSegmentedRecording ? session.recordingSegments : [],
+                    mediaDirectory: session.isSegmentedRecording ? session.baseURL.deletingLastPathComponent() : nil,
+                    useLowMediaResolution: session.segmentedLimitProfile?.usesLowAIMediaResolution ?? false,
                     config: snapshotConfig,
                     agent: agent,
                     existingRemoteMedia: session.metadata.remoteMedia,
@@ -1009,7 +1109,10 @@ public final class AppViewModel {
                         thread: previousThread,
                         question: question,
                         config: snapshotConfig,
-                        existingRemoteMedia: session.metadata.remoteMedia
+                        existingRemoteMedia: session.metadata.remoteMedia,
+                        recordingSegments: session.isSegmentedRecording ? session.recordingSegments : [],
+                        mediaDirectory: session.isSegmentedRecording ? session.baseURL.deletingLastPathComponent() : nil,
+                        useLowMediaResolution: session.segmentedLimitProfile?.usesLowAIMediaResolution ?? false
                     ),
                     remoteMediaUpdate: { manifest in
                         let store = SessionStore(saveDirectory: session.baseURL.deletingLastPathComponent())
@@ -1138,7 +1241,7 @@ public final class AppViewModel {
 
     private func updateRemoteMediaAvailability(now: Date = Date()) {
         guard let manifest = selectedSession?.metadata.remoteMedia,
-              manifest.isComplete,
+              manifest.isReadyForUse,
               let expiration = manifest.earliestExpiration else {
             remoteMediaAvailability = .notUploaded
             return
@@ -1161,6 +1264,9 @@ public final class AppViewModel {
         }
         if !config.agents.contains(where: { $0.id == config.activeAgentID }) {
             config.activeAgentID = config.agents.first?.id ?? "default"
+        }
+        if SegmentedRecordingLimitProfile(rawValue: config.segmentedRecordingLimitProfileID) == nil {
+            config.segmentedRecordingLimitProfile = .standard
         }
         normalizeCaptureDisplaySelection(shouldPersist: false)
     }
@@ -1213,7 +1319,14 @@ public final class AppViewModel {
                     return
                 }
                 await MainActor.run {
-                    self?.recordingDuration += 1
+                    guard let self else { return }
+                    self.recordingDuration += 1
+                    if let profile = self.activeRecordingLimitProfile {
+                        self.recordingRemainingDuration = max(0, profile.maximumDurationSeconds - self.recordingDuration)
+                        if self.recordingDuration >= profile.maximumDurationSeconds {
+                            Task { await self.stopRecording(reason: .durationLimit) }
+                        }
+                    }
                 }
             }
         }
@@ -1249,6 +1362,42 @@ public final class AppViewModel {
         }
     }
 
+    private func handleSegmentedRecorderEvent(_ event: SegmentedRecorderEvent) {
+        switch event {
+        case .didStart:
+            isRecording = true
+            AppLog.info("Segmented recorder event didStart", category: .recording)
+        case let .didFinalizeSegment(segment):
+            currentRecordingSegments.removeAll { $0.index == segment.index }
+            currentRecordingSegments.append(segment)
+            currentRecordingSegments.sort { $0.index < $1.index }
+            if let baseName = currentRecordingBaseName, let profile = activeRecordingLimitProfile {
+                try? sessionStore.updateSegmentedRecordingMetadata(
+                    baseName: baseName,
+                    update: SegmentedRecordingMetadataUpdate(
+                        duration: recordingDuration,
+                        quality: config.videoQuality,
+                        profile: profile,
+                        stopReason: nil,
+                        segments: currentRecordingSegments
+                    )
+                )
+            }
+            AppLog.info("Segment finalized index=\(segment.index)", category: .recording)
+        case let .didReachLimit(reason):
+            AppLog.info("Segmented recording reached limit reason=\(reason.rawValue)", category: .recording)
+            Task { [weak self] in
+                await self?.stopRecording(reason: reason)
+            }
+        case let .didFail(message):
+            errorMessage = "Recording failed: \(message)"
+            AppLog.error("Segmented recorder failed: \(message)", category: .recording)
+            Task { [weak self] in
+                await self?.stopRecording(reason: .failure)
+            }
+        }
+    }
+
     private func missingPermissionNames() -> String {
         var names: [String] = []
         if !permissionState.hasScreenCapture {
@@ -1278,8 +1427,10 @@ public final class AppViewModel {
             let timestamp = formatter.string(from: date)
             let baseName = "Meet_\(timestamp)"
             let videoURL = directory.appending(path: "\(baseName).mp4")
+            let firstSegmentURL = directory.appending(path: "\(baseName)_part_000.mp4")
             let metadataURL = directory.appending(path: "\(baseName).json")
             if !FileManager.default.fileExists(atPath: videoURL.path),
+               !FileManager.default.fileExists(atPath: firstSegmentURL.path),
                !FileManager.default.fileExists(atPath: metadataURL.path) {
                 return (baseName, timestamp)
             }

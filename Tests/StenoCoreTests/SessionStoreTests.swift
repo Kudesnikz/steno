@@ -91,7 +91,7 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appending(path: "\(otherBaseName).mp4").path))
     }
 
-    func testFolderNamesAreTrimmedUniqueAndSessionsCanMoveBackToRoot() throws {
+    func testFolderNamesAreTrimmedUniqueAndSessionsCanMoveBetweenFoldersAndRoot() throws {
         let directory = try temporaryDirectory()
         let baseName = "Meet_24.06.2024_15:30:00"
         try Data("video".utf8).write(to: directory.appending(path: "\(baseName).mp4"))
@@ -104,17 +104,30 @@ final class SessionStoreTests: XCTestCase {
             source: .captured
         )
 
-        let folder = try store.createFolder(name: "  Project  ")
-        XCTAssertEqual(folder.name, "Project")
+        let folderA = try store.createFolder(name: "  Project  ")
+        let folderB = try store.createFolder(name: "Archive")
+        XCTAssertEqual(folderA.name, "Project")
         XCTAssertThrowsError(try store.createFolder(name: "project"))
 
-        let session = try XCTUnwrap(store.scanSessions().first)
-        try store.move(session: session, toFolderID: folder.id)
-        XCTAssertEqual(store.scanSessions().first?.metadata.folderID, folder.id)
+        var session = try XCTUnwrap(store.scanSessions().first)
+        XCTAssertNil(session.metadata.folderID)
 
-        try store.deleteFolder(id: folder.id, moveSessionsToRoot: true)
+        try store.move(session: session, toFolderID: folderA.id)
+        session = try XCTUnwrap(store.scanSessions().first)
+        XCTAssertEqual(session.metadata.folderID, folderA.id)
+
+        try store.move(session: session, toFolderID: folderB.id)
+        session = try XCTUnwrap(store.scanSessions().first)
+        XCTAssertEqual(session.metadata.folderID, folderB.id)
+
+        try store.move(session: session, toFolderID: nil)
+        session = try XCTUnwrap(store.scanSessions().first)
+        XCTAssertNil(session.metadata.folderID)
+
+        try store.move(session: session, toFolderID: folderA.id)
+        try store.deleteFolder(id: folderA.id, moveSessionsToRoot: true)
         XCTAssertNil(store.scanSessions().first?.metadata.folderID)
-        XCTAssertTrue(store.loadFolders().isEmpty)
+        XCTAssertEqual(store.loadFolders().map(\.id), [folderB.id])
     }
 
     func testVersionedReportsAndChatsStayBoundToReportID() throws {

@@ -242,15 +242,17 @@ private struct SidebarView: View {
     @State private var isFileDropTarget = false
 
     var body: some View {
+        let layout = RecordingSidebarLayout(folders: viewModel.folders, sessions: viewModel.sessions)
+
         List(selection: $viewModel.selectedSessionID) {
             Section {
-                if viewModel.sessions.isEmpty && viewModel.folders.isEmpty {
+                if layout.isEmpty {
                     SidebarPlaceholderRow()
                 } else {
-                    recordingGroup(title: "Без папки", systemImage: "tray", folderID: nil, sessions: rootSessions)
-                    ForEach(viewModel.folders) { folder in
-                        folderGroup(folder)
+                    ForEach(layout.folders) { folder in
+                        folderGroup(folder, layout: layout)
                     }
+                    sessionRows(layout.rootSessions, layout: layout)
                 }
             } header: {
                 HStack {
@@ -339,18 +341,14 @@ private struct SidebarView: View {
         }
     }
 
-    private var rootSessions: [MeetingSession] {
-        viewModel.sessions.filter { $0.metadata.folderID == nil }
-    }
-
     @ViewBuilder
-    private func folderGroup(_ folder: RecordingFolder) -> some View {
+    private func folderGroup(_ folder: RecordingFolder, layout: RecordingSidebarLayout) -> some View {
         DisclosureGroup {
-            let sessions = viewModel.sessions.filter { $0.metadata.folderID == folder.id }
+            let sessions = layout.sessions(in: folder)
             if sessions.isEmpty {
                 Text("Пустая папка").font(.caption).foregroundStyle(.tertiary)
             } else {
-                sessionRows(sessions)
+                sessionRows(sessions, layout: layout)
             }
         } label: {
             HStack {
@@ -387,24 +385,7 @@ private struct SidebarView: View {
     }
 
     @ViewBuilder
-    private func recordingGroup(title: String, systemImage: String, folderID: String?, sessions: [MeetingSession]) -> some View {
-        DisclosureGroup {
-            if sessions.isEmpty {
-                Text("Нет записей").font(.caption).foregroundStyle(.tertiary)
-            } else {
-                sessionRows(sessions)
-            }
-        } label: {
-            Label(title, systemImage: systemImage)
-                .contentShape(Rectangle())
-                .onDrop(of: [.text, .fileURL], isTargeted: nil) { providers in
-                    handleDrop(providers, folderID: folderID)
-                }
-        }
-    }
-
-    @ViewBuilder
-    private func sessionRows(_ sessions: [MeetingSession]) -> some View {
+    private func sessionRows(_ sessions: [MeetingSession], layout: RecordingSidebarLayout) -> some View {
         ForEach(sessions) { session in
             SessionRow(
                 session: session,
@@ -421,6 +402,28 @@ private struct SidebarView: View {
             .onDrag { NSItemProvider(object: session.id as NSString) }
             .contextMenu {
                 Button("Rename") { beginRename(session) }
+
+                let destinationFolders = layout.moveDestinations(for: session)
+                Menu {
+                    ForEach(destinationFolders) { folder in
+                        Button(folder.name) {
+                            viewModel.moveSession(id: session.id, toFolderID: folder.id)
+                        }
+                    }
+                } label: {
+                    Label("Переместить в папку", systemImage: "folder")
+                }
+                .disabled(destinationFolders.isEmpty)
+
+                if session.metadata.folderID != nil {
+                    Button {
+                        viewModel.moveSession(id: session.id, toFolderID: nil)
+                    } label: {
+                        Label("Убрать из папки", systemImage: "folder.badge.minus")
+                    }
+                }
+
+                Divider()
                 Button("Delete", role: .destructive) { requestDelete(session) }
             }
         }
@@ -516,7 +519,7 @@ private struct SidebarStatusRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if viewModel.isRecording {
-                Label(StenoFormatters.duration(viewModel.recordingDuration), systemImage: "record.circle")
+                Label(recordingTimeText, systemImage: "record.circle")
                     .foregroundStyle(.red)
             } else if viewModel.isFinalizingRecording {
                 Label("Finalizing recording", systemImage: "hourglass")
@@ -538,6 +541,12 @@ private struct SidebarStatusRow: View {
                 .padding(.leading, 26)
                 .lineLimit(1)
         }
+    }
+
+    private var recordingTimeText: String {
+        let elapsed = StenoFormatters.duration(viewModel.recordingDuration)
+        guard let remaining = viewModel.recordingRemainingDuration else { return elapsed }
+        return "\(elapsed) · осталось \(StenoFormatters.duration(remaining))"
     }
 }
 
@@ -1128,34 +1137,61 @@ private struct MarkdownTableView: View {
 
 private struct PlayerPane: View {
     var session: MeetingSession
+    @State private var player: AVPlayer?
+    @State private var playbackError: String?
 
     var body: some View {
-        if FileManager.default.fileExists(atPath: session.videoURL.path) {
-            AVPlayerViewBridge(url: session.videoURL)
-        } else {
-            ContentUnavailableView("Video Unavailable", systemImage: "video.slash")
+        Group {
+            if let player {
+                AVPlayerViewBridge(player: player)
+            } else if let playbackError {
+                ContentUnavailableView("Video Unavailable", systemImage: "video.slash", description: Text(playbackError))
+            } else {
+                ProgressView("Подготовка записи…")
+            }
         }
+        .task(id: playbackIdentity) {
+            player?.pause()
+            player = nil
+            playbackError = nil
+            guard FileManager.default.fileExists(atPath: session.videoURL.path) else {
+                playbackError = "Файл видео не найден."
+                return
+            }
+            do {
+                let item = try await RecordingPlaybackService.makePlayerItem(for: session)
+                guard !Task.isCancelled else { return }
+                player = AVPlayer(playerItem: item)
+            } catch {
+                playbackError = error.localizedDescription
+            }
+        }
+        .onDisappear {
+            player?.pause()
+        }
+    }
+
+    private var playbackIdentity: String {
+        let parts = session.recordingSegments.map { "\($0.index):\($0.videoPath):\($0.microphoneAudioPath ?? "")" }
+        return ([session.id] + parts).joined(separator: "|")
     }
 }
 
 private struct AVPlayerViewBridge: NSViewRepresentable {
-    let url: URL
+    let player: AVPlayer
 
     func makeNSView(context: Context) -> AVPlayerView {
         let view = AVPlayerView()
         view.controlsStyle = .floating
         view.videoGravity = .resizeAspect
-        view.player = AVPlayer(url: url)
+        view.player = player
         return view
     }
 
     func updateNSView(_ nsView: AVPlayerView, context: Context) {
-        let currentURL = (nsView.player?.currentItem?.asset as? AVURLAsset)?.url
-        guard currentURL != url else {
-            return
-        }
+        guard nsView.player !== player else { return }
         nsView.player?.pause()
-        nsView.player = AVPlayer(url: url)
+        nsView.player = player
     }
 
     static func dismantleNSView(_ nsView: AVPlayerView, coordinator: ()) {
@@ -1176,6 +1212,16 @@ private struct InfoPane: View {
                         InfoRow(label: "Quality", value: recording.videoQuality)
                         InfoRow(label: "Video", value: recording.videoPath)
                         InfoRow(label: "Video size", value: StenoFormatters.megabytes(recording.videoSizeMB))
+                        if recording.segmented {
+                            InfoRow(label: "Режим", value: "Экспериментальная сегментированная запись")
+                            InfoRow(label: "Частей", value: String(recording.segments.count))
+                            if let profile = session.segmentedLimitProfile {
+                                InfoRow(label: "Лимит", value: profile.settingsTitle)
+                            }
+                            if let stopReason = recording.stopReason {
+                                InfoRow(label: "Причина остановки", value: stopReason.rawValue)
+                            }
+                        }
                     }
                 }
 

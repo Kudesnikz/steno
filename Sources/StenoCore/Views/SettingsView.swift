@@ -25,7 +25,7 @@ public struct SettingsView: View {
             Divider()
 
             HStack {
-                Link("Version 2.1.0-native", destination: AppLinks.repository)
+                Link("Version 2.2.0-native", destination: AppLinks.repository)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .help("Open Steno on GitHub")
@@ -161,10 +161,32 @@ public struct SettingsView: View {
                 }
                 videoQualityDetails
                 Toggle("Отображать время записи", isOn: $viewModel.config.showRecordingTime)
-                Toggle("Разбивать большие видео для Gemini", isOn: $viewModel.config.splitLargeMediaEnabled)
-                Text("Если включено, AI-копия записи свыше 400 MiB или 40 минут будет разбита на части. Оригинал не изменяется. По умолчанию выключено.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Toggle("Экспериментальная сегментированная запись", isOn: $viewModel.config.experimentalSegmentedRecordingEnabled)
+                if viewModel.config.experimentalSegmentedRecordingEnabled {
+                    Picker(
+                        "Лимит одной записи",
+                        selection: $viewModel.config.segmentedRecordingLimitProfileID
+                    ) {
+                        ForEach(SegmentedRecordingLimitProfile.allCases) { profile in
+                            Text(profile.settingsTitle).tag(profile.rawValue)
+                        }
+                    }
+                    Text("MP4 записывается сразу: H.264 + одна AAC-дорожка системного звука. Микрофон хранится отдельно в M4A. Части автоматически закрываются не позднее 55 минут или 1,8 GB; вся запись останавливается по первому общему лимиту.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if viewModel.config.segmentedRecordingLimitProfile != .short {
+                        Text("Для этого профиля Gemini получает media resolution Low. Загрузка частей поддерживается, но очень длинная запись всё равно может не поместиться в контекст выбранной модели — в таком случае Steno покажет ошибку API без скрытого map-reduce.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } else {
+                    Toggle("Разбивать большие видео для Gemini", isOn: $viewModel.config.splitLargeMediaEnabled)
+                    Text("Используется легаси-флоу: промежуточный MOV и финальная обработка FFmpeg после остановки.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section("Audio") {

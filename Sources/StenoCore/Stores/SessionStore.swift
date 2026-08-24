@@ -55,9 +55,16 @@ public struct SessionStore {
             }
 
             var builder = builders[baseName] ?? SessionBuilder(baseName: baseName, directory: saveDirectory)
+            let escapedBaseName = NSRegularExpression.escapedPattern(for: baseName)
             let protocolPattern = "^\(NSRegularExpression.escapedPattern(for: baseName))_protocol_(.+)\\.txt$"
+            let segmentVideoPattern = "^\(escapedBaseName)_part_(\\d{3})\\.mp4$"
+            let segmentMicrophonePattern = "^\(escapedBaseName)_part_(\\d{3})_mic\\.m4a$"
             if fileName == "\(baseName).mp4" {
                 builder.videoURL = url
+            } else if let index = fileName.firstIntegerMatch(pattern: segmentVideoPattern) {
+                builder.segmentVideoURLs[index] = url
+            } else if let index = fileName.firstIntegerMatch(pattern: segmentMicrophonePattern) {
+                builder.segmentMicrophoneURLs[index] = url
             } else if fileName == "\(baseName).json" {
                 builder.metadataURL = url
             } else if fileName == "\(baseName)_protocol.txt" {
@@ -71,14 +78,55 @@ public struct SessionStore {
         }
 
         let sessions: [MeetingSession] = builders.values.compactMap { builder in
-            guard let videoURL = builder.videoURL else {
-                return nil
-            }
-            let modifiedAt = (try? videoURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
             let metadataURL = builder.metadataURL ?? saveDirectory.appending(path: "\(builder.baseName).json")
             var metadata = loadMetadata(url: metadataURL)
-            var didMigrateMetadata = metadata.schemaVersion != 2
-            metadata.schemaVersion = 2
+            var didMigrateMetadata = metadata.schemaVersion != 3
+            metadata.schemaVersion = 3
+            if !builder.segmentVideoURLs.isEmpty,
+               metadata.recording?.segments.isEmpty != false {
+                let segments = builder.segmentVideoURLs.keys.sorted().compactMap { index -> RecordingSegment? in
+                    guard let videoURL = builder.segmentVideoURLs[index] else { return nil }
+                    let micURL = builder.segmentMicrophoneURLs[index]
+                    return RecordingSegment(
+                        index: index,
+                        startSeconds: 0,
+                        durationSeconds: 0,
+                        videoPath: videoURL.lastPathComponent,
+                        microphoneAudioPath: micURL?.lastPathComponent,
+                        videoSizeBytes: fileSize(at: videoURL),
+                        microphoneSizeBytes: micURL.map(fileSize(at:)) ?? 0
+                    )
+                }
+                let totalVideoBytes = segments.reduce(Int64(0)) { $0 + $1.videoSizeBytes }
+                let totalMicBytes = segments.reduce(Int64(0)) { $0 + $1.microphoneSizeBytes }
+                metadata.recording = RecordingInfo(
+                    durationSeconds: metadata.recording?.durationSeconds ?? 0,
+                    videoQuality: metadata.recording?.videoQuality ?? "",
+                    videoPath: segments.first?.videoPath ?? "",
+                    microphoneAudioPath: segments.first?.microphoneAudioPath ?? "",
+                    videoSizeMB: megabytes(totalVideoBytes),
+                    microphoneSizeMB: megabytes(totalMicBytes),
+                    segmented: true,
+                    limitProfileID: metadata.recording?.limitProfileID,
+                    stopReason: metadata.recording?.stopReason,
+                    segments: segments
+                )
+                didMigrateMetadata = true
+            }
+            let metadataSegmentURLs = metadata.recording?.segments.map {
+                saveDirectory.appending(path: $0.videoPath)
+            } ?? []
+            guard let videoURL = builder.videoURL
+                ?? metadataSegmentURLs.first(where: { fileManager.fileExists(atPath: $0.path) })
+                ?? builder.segmentVideoURLs.sorted(by: { $0.key < $1.key }).first?.value else {
+                return nil
+            }
+            let mediaURLs = [videoURL]
+                + builder.segmentVideoURLs.values
+                + builder.segmentMicrophoneURLs.values
+            let modifiedAt = mediaURLs.compactMap {
+                try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            }.compactMap { $0 }.max() ?? .distantPast
             if metadata.source == nil {
                 metadata.source = .legacy
                 didMigrateMetadata = true
@@ -140,7 +188,8 @@ public struct SessionStore {
                 baseURL: saveDirectory.appending(path: builder.baseName),
                 videoURL: videoURL,
                 metadataURL: metadataURL,
-                audioURLs: builder.audioURLs.sorted { $0.lastPathComponent < $1.lastPathComponent },
+                audioURLs: (builder.audioURLs + builder.segmentMicrophoneURLs.values)
+                    .sorted { $0.lastPathComponent < $1.lastPathComponent },
                 reportURLsByAgentID: latestURLsByAgentID,
                 reportURLsByReportID: reportURLsByID,
                 metadata: metadata,
@@ -165,7 +214,7 @@ public struct SessionStore {
             throw FolderError.missingFolder
         }
         var metadata = session.metadata
-        metadata.schemaVersion = 2
+        metadata.schemaVersion = 3
         metadata.folderID = folderID
         try saveMetadata(metadata, to: session.metadataURL)
         AppLog.info("Moved session \(session.baseName) to folder=\(folderID ?? "root")", category: .sessions)
@@ -221,6 +270,30 @@ public struct SessionStore {
         )
         try saveMetadata(metadata, to: metadataURL)
         AppLog.info("Updated recording metadata for \(baseName)", category: .sessions)
+    }
+
+    public func updateSegmentedRecordingMetadata(
+        baseName: String,
+        update: SegmentedRecordingMetadataUpdate
+    ) throws {
+        let sortedSegments = update.segments.sorted { $0.index < $1.index }
+        let metadataURL = saveDirectory.appending(path: "\(baseName).json")
+        var metadata = loadMetadata(url: metadataURL)
+        metadata.schemaVersion = 3
+        metadata.recording = RecordingInfo(
+            durationSeconds: update.duration,
+            videoQuality: update.quality,
+            videoPath: sortedSegments.first?.videoPath ?? "",
+            microphoneAudioPath: sortedSegments.first?.microphoneAudioPath ?? "",
+            videoSizeMB: megabytes(sortedSegments.reduce(Int64(0)) { $0 + $1.videoSizeBytes }),
+            microphoneSizeMB: megabytes(sortedSegments.reduce(Int64(0)) { $0 + $1.microphoneSizeBytes }),
+            segmented: true,
+            limitProfileID: update.profile.rawValue,
+            stopReason: update.stopReason,
+            segments: sortedSegments
+        )
+        try saveMetadata(metadata, to: metadataURL)
+        AppLog.info("Updated segmented recording metadata for \(baseName), parts=\(sortedSegments.count)", category: .sessions)
     }
 
     public func appendReportMetadata(baseName: String, report: ReportInfo) throws {
@@ -283,7 +356,7 @@ public struct SessionStore {
     public func updateRemoteMedia(baseName: String, manifest: RemoteMediaManifest?) throws {
         let metadataURL = saveDirectory.appending(path: "\(baseName).json")
         var metadata = loadMetadata(url: metadataURL)
-        metadata.schemaVersion = 2
+        metadata.schemaVersion = 3
         metadata.remoteMedia = manifest
         try saveMetadata(metadata, to: metadataURL)
     }
@@ -398,6 +471,14 @@ public struct SessionStore {
         return String(scalars).isEmpty ? "item" : String(scalars)
     }
 
+    private func fileSize(at url: URL) -> Int64 {
+        (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+    }
+
+    private func megabytes(_ bytes: Int64) -> Double {
+        (Double(bytes) / 1_048_576.0 * 100).rounded() / 100
+    }
+
 }
 
 private struct SessionBuilder {
@@ -406,6 +487,8 @@ private struct SessionBuilder {
     var videoURL: URL?
     var metadataURL: URL?
     var audioURLs: [URL] = []
+    var segmentVideoURLs: [Int: URL] = [:]
+    var segmentMicrophoneURLs: [Int: URL] = [:]
     var reportURLsByAgentID: [String: URL] = [:]
 }
 
@@ -421,5 +504,9 @@ private extension String {
             return nil
         }
         return String(self[swiftRange])
+    }
+
+    func firstIntegerMatch(pattern: String) -> Int? {
+        firstMatch(pattern: pattern).flatMap(Int.init)
     }
 }

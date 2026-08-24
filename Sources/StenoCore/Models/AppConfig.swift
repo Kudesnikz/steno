@@ -45,6 +45,59 @@ public struct VideoQualityPreset: Codable, Hashable, Sendable {
     }
 }
 
+public enum SegmentedRecordingLimitProfile: String, Codable, CaseIterable, Identifiable, Sendable {
+    case short
+    case standard
+    case long
+    case maximum
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .short: "Короткая"
+        case .standard: "Обычная"
+        case .long: "Длинная"
+        case .maximum: "Максимальная"
+        }
+    }
+
+    public var maximumDurationSeconds: Int {
+        switch self {
+        case .short: 50 * 60
+        case .standard: 140 * 60
+        case .long: 280 * 60
+        case .maximum: 500 * 60
+        }
+    }
+
+    public var maximumPayloadBytes: Int64 {
+        switch self {
+        case .short: 1_800_000_000
+        case .standard: 3_600_000_000
+        case .long: 7_200_000_000
+        case .maximum: 18_000_000_000
+        }
+    }
+
+    public var maximumVideoParts: Int {
+        switch self {
+        case .short: 1
+        case .standard: 3
+        case .long: 6
+        case .maximum: 10
+        }
+    }
+
+    public var usesLowAIMediaResolution: Bool { self != .short }
+
+    public var settingsTitle: String {
+        let minutes = maximumDurationSeconds / 60
+        let gigabytes = Double(maximumPayloadBytes) / 1_000_000_000
+        return String(format: "%@ — до %d мин / %.1f GB", displayName, minutes, gigabytes)
+    }
+}
+
 public struct AppConfig: Codable, Hashable, Sendable {
     public var aiProviderID: String
     public var apiKey: String
@@ -68,6 +121,8 @@ public struct AppConfig: Codable, Hashable, Sendable {
     public var microphoneEnabled: Bool
     public var systemAudioEnabled: Bool
     public var splitLargeMediaEnabled: Bool
+    public var experimentalSegmentedRecordingEnabled: Bool
+    public var segmentedRecordingLimitProfileID: String
     public var usedTokens: Int
     public var lastRequestTokens: Int
     public var activeAgentID: String
@@ -96,6 +151,8 @@ public struct AppConfig: Codable, Hashable, Sendable {
         case microphoneEnabled = "microphone_enabled"
         case systemAudioEnabled = "system_audio_enabled"
         case splitLargeMediaEnabled = "split_large_media_enabled"
+        case experimentalSegmentedRecordingEnabled = "experimental_segmented_recording_enabled"
+        case segmentedRecordingLimitProfileID = "segmented_recording_limit_profile"
         case usedTokens = "used_tokens"
         case lastRequestTokens = "last_request_tokens"
         case activeAgentID = "active_agent_id"
@@ -125,6 +182,8 @@ public struct AppConfig: Codable, Hashable, Sendable {
         microphoneEnabled: Bool = true,
         systemAudioEnabled: Bool = true,
         splitLargeMediaEnabled: Bool = false,
+        experimentalSegmentedRecordingEnabled: Bool = true,
+        segmentedRecordingLimitProfileID: String = SegmentedRecordingLimitProfile.standard.rawValue,
         usedTokens: Int,
         lastRequestTokens: Int,
         activeAgentID: String,
@@ -152,6 +211,8 @@ public struct AppConfig: Codable, Hashable, Sendable {
         self.microphoneEnabled = microphoneEnabled
         self.systemAudioEnabled = systemAudioEnabled
         self.splitLargeMediaEnabled = splitLargeMediaEnabled
+        self.experimentalSegmentedRecordingEnabled = experimentalSegmentedRecordingEnabled
+        self.segmentedRecordingLimitProfileID = segmentedRecordingLimitProfileID
         self.usedTokens = usedTokens
         self.lastRequestTokens = lastRequestTokens
         self.activeAgentID = activeAgentID
@@ -183,6 +244,17 @@ public struct AppConfig: Codable, Hashable, Sendable {
         microphoneEnabled = try container.decodeIfPresent(Bool.self, forKey: .microphoneEnabled) ?? defaults.microphoneEnabled
         systemAudioEnabled = try container.decodeIfPresent(Bool.self, forKey: .systemAudioEnabled) ?? defaults.systemAudioEnabled
         splitLargeMediaEnabled = try container.decodeIfPresent(Bool.self, forKey: .splitLargeMediaEnabled) ?? defaults.splitLargeMediaEnabled
+        experimentalSegmentedRecordingEnabled = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .experimentalSegmentedRecordingEnabled
+        ) ?? defaults.experimentalSegmentedRecordingEnabled
+        segmentedRecordingLimitProfileID = try container.decodeIfPresent(
+            String.self,
+            forKey: .segmentedRecordingLimitProfileID
+        ) ?? defaults.segmentedRecordingLimitProfileID
+        if SegmentedRecordingLimitProfile(rawValue: segmentedRecordingLimitProfileID) == nil {
+            segmentedRecordingLimitProfileID = defaults.segmentedRecordingLimitProfileID
+        }
         usedTokens = try container.decodeIfPresent(Int.self, forKey: .usedTokens) ?? defaults.usedTokens
         lastRequestTokens = try container.decodeIfPresent(Int.self, forKey: .lastRequestTokens) ?? defaults.lastRequestTokens
         activeAgentID = try container.decodeIfPresent(String.self, forKey: .activeAgentID) ?? defaults.activeAgentID
@@ -442,6 +514,8 @@ public extension AppConfig {
         microphoneEnabled: true,
         systemAudioEnabled: true,
         splitLargeMediaEnabled: false,
+        experimentalSegmentedRecordingEnabled: true,
+        segmentedRecordingLimitProfileID: SegmentedRecordingLimitProfile.standard.rawValue,
         usedTokens: 0,
         lastRequestTokens: 0,
         activeAgentID: "default",
@@ -458,6 +532,11 @@ public extension AppConfig {
 
     func preset() -> VideoQualityPreset {
         Self.qualityPresets[videoQuality] ?? Self.qualityPresets["Medium"]!
+    }
+
+    var segmentedRecordingLimitProfile: SegmentedRecordingLimitProfile {
+        get { SegmentedRecordingLimitProfile(rawValue: segmentedRecordingLimitProfileID) ?? .standard }
+        set { segmentedRecordingLimitProfileID = newValue.rawValue }
     }
 }
 

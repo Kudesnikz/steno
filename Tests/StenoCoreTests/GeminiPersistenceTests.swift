@@ -129,4 +129,87 @@ final class GeminiPersistenceTests: XCTestCase {
             isEnabled: true
         ))
     }
+
+    func testPendingResumableUploadMakesManifestIncompleteAndSurvivesJSON() throws {
+        let pending = RemoteUploadSession(
+            attachmentID: "segment-0-video",
+            sourceFingerprint: "video-fingerprint",
+            uploadURL: "https://upload.example/session",
+            uploadedBytes: 32 * 1_048_576,
+            totalBytes: 1_000_000_000
+        )
+        let manifest = RemoteMediaManifest(
+            sourceFingerprint: "all",
+            credentialFingerprint: "credential",
+            baseURLFingerprint: "base",
+            parts: [],
+            expectedPartCount: 2,
+            pendingUploads: [pending]
+        )
+        XCTAssertFalse(manifest.isComplete)
+
+        let decoded = try JSONDecoder().decode(
+            RemoteMediaManifest.self,
+            from: JSONEncoder().encode(manifest)
+        )
+        XCTAssertEqual(decoded.pendingUploads, [pending])
+    }
+
+    func testManifestReusesOnlyAttachmentWithMatchingFingerprint() {
+        let now = Date()
+        let first = RemoteMediaPart(
+            index: 0, startSeconds: 0, durationSeconds: 60,
+            resourceName: "files/video", uri: "gemini://video", mimeType: "video/mp4",
+            sizeBytes: 100, expiresAt: now.addingTimeInterval(3_600),
+            attachmentID: "segment-0-video", role: "video_system_audio", segmentIndex: 0,
+            sourceFingerprint: "video-v1"
+        )
+        let second = RemoteMediaPart(
+            index: 1, startSeconds: 0, durationSeconds: 60,
+            resourceName: "files/mic", uri: "gemini://mic", mimeType: "audio/mp4",
+            sizeBytes: 10, expiresAt: now.addingTimeInterval(3_600),
+            attachmentID: "segment-0-microphone", role: "microphone_audio", segmentIndex: 0,
+            sourceFingerprint: "mic-v1"
+        )
+        let manifest = RemoteMediaManifest(
+            sourceFingerprint: "aggregate-v1",
+            credentialFingerprint: "credential",
+            baseURLFingerprint: "base",
+            parts: [first, second],
+            expectedPartCount: 2
+        )
+
+        XCTAssertNotNil(manifest.reusablePart(
+            attachmentID: "segment-0-video",
+            sourceFingerprint: "video-v1",
+            position: 0,
+            aggregateSourceFingerprint: "aggregate-v2",
+            now: now
+        ))
+        XCTAssertNil(manifest.reusablePart(
+            attachmentID: "segment-0-microphone",
+            sourceFingerprint: "mic-v2",
+            position: 1,
+            aggregateSourceFingerprint: "aggregate-v2",
+            now: now
+        ))
+
+        var processing = manifest
+        processing.parts[0].state = "PROCESSING"
+        XCTAssertNotNil(processing.matchingPart(
+            attachmentID: "segment-0-video",
+            sourceFingerprint: "video-v1",
+            position: 0,
+            aggregateSourceFingerprint: "aggregate-v2",
+            now: now
+        ))
+        XCTAssertNil(processing.reusablePart(
+            attachmentID: "segment-0-video",
+            sourceFingerprint: "video-v1",
+            position: 0,
+            aggregateSourceFingerprint: "aggregate-v2",
+            now: now
+        ))
+        XCTAssertFalse(processing.isReadyForUse)
+    }
 }

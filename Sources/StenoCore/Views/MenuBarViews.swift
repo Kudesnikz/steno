@@ -9,6 +9,7 @@ public struct StatusBarSnapshot: Equatable, Sendable {
     public var isProcessing: Bool
     public var showRecordingTime: Bool
     public var recordingDuration: Int
+    public var recordingRemainingDuration: Int?
     public var microphoneEnabled: Bool
     public var systemAudioEnabled: Bool
 
@@ -18,6 +19,7 @@ public struct StatusBarSnapshot: Equatable, Sendable {
         isProcessing: Bool,
         showRecordingTime: Bool,
         recordingDuration: Int,
+        recordingRemainingDuration: Int? = nil,
         microphoneEnabled: Bool,
         systemAudioEnabled: Bool
     ) {
@@ -26,6 +28,7 @@ public struct StatusBarSnapshot: Equatable, Sendable {
         self.isProcessing = isProcessing
         self.showRecordingTime = showRecordingTime
         self.recordingDuration = recordingDuration
+        self.recordingRemainingDuration = recordingRemainingDuration
         self.microphoneEnabled = microphoneEnabled
         self.systemAudioEnabled = systemAudioEnabled
     }
@@ -38,6 +41,7 @@ public struct StatusBarSnapshot: Equatable, Sendable {
             isProcessing: viewModel.isProcessing,
             showRecordingTime: viewModel.config.showRecordingTime,
             recordingDuration: viewModel.recordingDuration,
+            recordingRemainingDuration: viewModel.recordingRemainingDuration,
             microphoneEnabled: viewModel.config.microphoneEnabled,
             systemAudioEnabled: viewModel.config.systemAudioEnabled
         )
@@ -64,6 +68,7 @@ public final class StatusBarController: NSObject {
         isProcessing: false,
         showRecordingTime: true,
         recordingDuration: 0,
+        recordingRemainingDuration: nil,
         microphoneEnabled: true,
         systemAudioEnabled: true
     )
@@ -100,9 +105,22 @@ public final class StatusBarController: NSObject {
             return
         }
 
+        let title = snapshot.title
         button.image = image(for: snapshot)
-        button.imagePosition = snapshot.title.isEmpty ? .imageOnly : .imageLeft
-        button.title = snapshot.title
+        button.imagePosition = title.isEmpty ? .imageOnly : .imageLeft
+        if snapshot.usesRemainingTimeWarning {
+            button.title = ""
+            button.attributedTitle = NSAttributedString(
+                string: title,
+                attributes: [
+                    .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .semibold),
+                    .foregroundColor: NSColor.systemOrange
+                ]
+            )
+        } else {
+            button.attributedTitle = NSAttributedString(string: "")
+            button.title = title
+        }
         button.toolTip = snapshot.tooltip
         rebuildMenu()
     }
@@ -271,12 +289,24 @@ private final class IconlessMenuItem: NSMenuItem {
     }
 }
 
-private extension StatusBarSnapshot {
+extension StatusBarSnapshot {
+    static let remainingTimeWarningThreshold = 5 * 60
+
     var title: String {
         guard isRecording, showRecordingTime else {
             return ""
         }
+        if let recordingRemainingDuration,
+           recordingRemainingDuration < Self.remainingTimeWarningThreshold {
+            let remaining = max(0, recordingRemainingDuration)
+            return String(format: "Rem. %02d:%02d", remaining / 60, remaining % 60)
+        }
         return StenoFormatters.duration(recordingDuration)
+    }
+
+    var usesRemainingTimeWarning: Bool {
+        guard isRecording, showRecordingTime, let recordingRemainingDuration else { return false }
+        return recordingRemainingDuration < Self.remainingTimeWarningThreshold
     }
 
     var tooltip: String {

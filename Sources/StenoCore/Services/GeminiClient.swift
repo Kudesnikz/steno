@@ -1,3 +1,4 @@
+import AVFoundation
 import CryptoKit
 import Foundation
 
@@ -66,6 +67,9 @@ public struct GeminiChatRequest: Sendable {
     public var question: String
     public var config: AppConfig
     public var existingRemoteMedia: RemoteMediaManifest?
+    public var recordingSegments: [RecordingSegment]
+    public var mediaDirectory: URL?
+    public var useLowMediaResolution: Bool
 
     public init(
         videoURL: URL,
@@ -75,7 +79,10 @@ public struct GeminiChatRequest: Sendable {
         thread: ChatThread,
         question: String,
         config: AppConfig,
-        existingRemoteMedia: RemoteMediaManifest? = nil
+        existingRemoteMedia: RemoteMediaManifest? = nil,
+        recordingSegments: [RecordingSegment] = [],
+        mediaDirectory: URL? = nil,
+        useLowMediaResolution: Bool = false
     ) {
         self.videoURL = videoURL
         self.audioURLs = audioURLs
@@ -85,6 +92,9 @@ public struct GeminiChatRequest: Sendable {
         self.question = question
         self.config = config
         self.existingRemoteMedia = existingRemoteMedia
+        self.recordingSegments = recordingSegments
+        self.mediaDirectory = mediaDirectory
+        self.useLowMediaResolution = useLowMediaResolution
     }
 }
 
@@ -250,6 +260,9 @@ public actor GeminiClient {
     public func generateReport(
         videoURL: URL,
         audioURLs: [URL],
+        recordingSegments: [RecordingSegment] = [],
+        mediaDirectory: URL? = nil,
+        useLowMediaResolution: Bool = false,
         config: AppConfig,
         agent: Agent,
         existingRemoteMedia: RemoteMediaManifest? = nil,
@@ -272,6 +285,8 @@ public actor GeminiClient {
                 request: GeminiMediaRequest(
                     videoURL: videoURL,
                     audioURLs: audioURLs,
+                    recordingSegments: recordingSegments,
+                    mediaDirectory: mediaDirectory,
                     existingManifest: existingRemoteMedia,
                     config: config
                 ),
@@ -288,9 +303,10 @@ public actor GeminiClient {
                     videoURL: videoURL,
                     config: config,
                     agent: agent,
-                    usageKind: .report
+                    usageKind: .report,
+                    useLowMediaResolution: useLowMediaResolution
                 ))
-            } catch where error.isContextWindowExceeded {
+            } catch where error.isContextWindowExceeded && recordingSegments.isEmpty {
                 AppLog.warning("Gemini context window exceeded; switching to map-reduce", category: .ai)
                 response = try await generateReportWithMapReduce(
                     files: ensured.files,
@@ -341,6 +357,8 @@ public actor GeminiClient {
             request: GeminiMediaRequest(
                 videoURL: request.videoURL,
                 audioURLs: request.audioURLs,
+                recordingSegments: request.recordingSegments,
+                mediaDirectory: request.mediaDirectory,
                 existingManifest: request.existingRemoteMedia,
                 config: config
             ),
@@ -377,12 +395,13 @@ public actor GeminiClient {
         contents.append(Content(role: "user", parts: [ContentPart(fileData: nil, text: request.question)]))
         let body = GenerateContentRequest(
             contents: contents,
-            systemInstruction: Content(role: nil, parts: [ContentPart(fileData: nil, text: PromptSecurity.chatPolicy)])
+            systemInstruction: Content(role: nil, parts: [ContentPart(fileData: nil, text: PromptSecurity.chatPolicy)]),
+            generationConfig: request.useLowMediaResolution ? .lowMediaResolution : nil
         )
         let response: GenerateContentResponse
         do {
             response = try await performGenerate(body: body, config: config, usageKind: .chat)
-        } catch where error.isContextWindowExceeded {
+        } catch where error.isContextWindowExceeded && request.recordingSegments.isEmpty {
             AppLog.warning("Gemini chat context window exceeded; using evidence-index fallback", category: .ai)
             response = try await answerChatWithEvidence(
                 files: ensured.files,
@@ -468,8 +487,63 @@ public actor GeminiClient {
         let audioURLs = request.audioURLs
         let existingManifest = request.existingManifest
         let config = request.config
-        let existingLocalURLs = ([videoURL] + audioURLs).filter { FileManager.default.fileExists(atPath: $0.path) }
-        let sourceFingerprint = try sourceFingerprint(urls: existingLocalURLs)
+        let prepared: PreparedMediaSet?
+        let uploadParts: [GeminiUploadAttachment]
+        let sourceURLs: [URL]
+        if !request.recordingSegments.isEmpty {
+            guard let directory = request.mediaDirectory else {
+                throw GeminiClientError.apiError(
+                    status: 0,
+                    message: "Segmented media directory is unavailable.",
+                    context: "local media validation"
+                )
+            }
+            prepared = nil
+            uploadParts = try await segmentedUploadAttachments(
+                segments: request.recordingSegments,
+                directory: directory
+            )
+            sourceURLs = uploadParts.map(\.url)
+        } else {
+            let preparedValue = try await mediaPreparationService.prepareGeminiUploadParts(
+                videoURL: videoURL,
+                splitLargeMediaEnabled: config.splitLargeMediaEnabled,
+                progress: progress
+            )
+            prepared = preparedValue
+            var legacyParts = preparedValue.parts.map { part in
+                GeminiUploadAttachment(
+                    attachmentID: "legacy-video-\(part.index)",
+                    role: "video_system_audio",
+                    segmentIndex: part.index,
+                    url: part.url,
+                    startSeconds: part.startSeconds,
+                    durationSeconds: part.durationSeconds,
+                    sourceFingerprint: ""
+                )
+            }
+            for audioURL in audioURLs where FileManager.default.fileExists(atPath: audioURL.path) {
+                legacyParts.append(GeminiUploadAttachment(
+                    attachmentID: "legacy-audio-\(legacyParts.count)",
+                    role: "microphone_audio",
+                    segmentIndex: nil,
+                    url: audioURL,
+                    startSeconds: 0,
+                    durationSeconds: 0,
+                    sourceFingerprint: ""
+                ))
+            }
+            uploadParts = try legacyParts.map { part in
+                var value = part
+                value.sourceFingerprint = try self.sourceFingerprint(urls: [part.url])
+                return value
+            }
+            sourceURLs = ([videoURL] + audioURLs).filter { FileManager.default.fileExists(atPath: $0.path) }
+        }
+        defer {
+            if let prepared { mediaPreparationService.cleanup(prepared) }
+        }
+        let sourceFingerprint = try sourceFingerprint(urls: sourceURLs)
         let credentialFingerprint = GeminiUsageStore.credentialFingerprint(config.apiKey)
         let baseURLFingerprint = GeminiUsageStore.credentialFingerprint(normalizedAPIBase(config.baseURL))
 
@@ -493,30 +567,36 @@ public actor GeminiClient {
             return (files, existingManifest)
         }
 
-        let prepared = try await mediaPreparationService.prepareGeminiUploadParts(
-            videoURL: videoURL,
-            splitLargeMediaEnabled: config.splitLargeMediaEnabled,
-            progress: progress
-        )
-        defer { mediaPreparationService.cleanup(prepared) }
-        var uploadParts = prepared.parts
-        for audioURL in audioURLs where FileManager.default.fileExists(atPath: audioURL.path) {
-            uploadParts.append(
-                PreparedMediaPart(url: audioURL, index: uploadParts.count, startSeconds: 0, durationSeconds: 0)
-            )
-        }
-
         var files: [GeminiFile] = []
         var manifestParts: [RemoteMediaPart] = []
-        let canResumeManifest = existingManifest?.sourceFingerprint == sourceFingerprint &&
-            existingManifest?.credentialFingerprint == credentialFingerprint &&
-            existingManifest?.baseURLFingerprint == baseURLFingerprint &&
-            existingManifest?.expectedPartCount == uploadParts.count
+        let canResumeManifest = existingManifest?.credentialFingerprint == credentialFingerprint &&
+            existingManifest?.baseURLFingerprint == baseURLFingerprint
+        func mergingUnprocessedReusableParts(_ current: [RemoteMediaPart]) -> [RemoteMediaPart] {
+            guard canResumeManifest, let existingManifest else { return current.sorted { $0.index < $1.index } }
+            var merged = current
+            let completedIDs = Set(current.compactMap(\.attachmentID))
+            for savedPart in existingManifest.parts {
+                guard let attachmentID = savedPart.attachmentID,
+                      !completedIDs.contains(attachmentID),
+                      let expected = uploadParts.first(where: { $0.attachmentID == attachmentID }),
+                      savedPart.sourceFingerprint == expected.sourceFingerprint,
+                      savedPart.state.uppercased() != "FAILED",
+                      savedPart.expiresAt.timeIntervalSinceNow > 300 else { continue }
+                var preserved = savedPart
+                preserved.index = uploadParts.firstIndex(where: { $0.attachmentID == attachmentID }) ?? savedPart.index
+                merged.append(preserved)
+            }
+            return merged.sorted { $0.index < $1.index }
+        }
         for (position, part) in uploadParts.enumerated() {
             try Task.checkCancellation()
             if canResumeManifest,
-               let savedPart = existingManifest?.parts.first(where: { $0.index == position }),
-               savedPart.expiresAt.timeIntervalSinceNow > 300 {
+               let savedPart = existingManifest?.matchingPart(
+                   attachmentID: part.attachmentID,
+                   sourceFingerprint: part.sourceFingerprint,
+                   position: position,
+                   aggregateSourceFingerprint: sourceFingerprint
+               ) {
                 let savedFile = GeminiFile(
                     name: savedPart.resourceName,
                     uri: savedPart.uri,
@@ -525,22 +605,53 @@ public actor GeminiClient {
                     createTime: ISO8601DateFormatter().string(from: savedPart.createdAt),
                     expirationTime: ISO8601DateFormatter().string(from: savedPart.expiresAt)
                 )
-                if let remote = try? await get(
-                    file: savedFile,
-                    apiKey: config.apiKey,
-                    baseURL: config.baseURL
-                ), remote.state?.uppercased() == "ACTIVE" {
-                    files.append(remote)
-                    manifestParts.append(savedPart)
+                do {
+                    let remote = try await get(
+                        file: savedFile,
+                        apiKey: config.apiKey,
+                        baseURL: config.baseURL
+                    )
+                    let ready: GeminiFile?
+                    switch remote.state?.uppercased() {
+                    case "ACTIVE":
+                        ready = remote
+                    case "FAILED":
+                        ready = nil
+                    default:
+                        ready = try await waitUntilReady(
+                            file: remote,
+                            apiKey: config.apiKey,
+                            baseURL: config.baseURL,
+                            progress: progress
+                        )
+                    }
+                    guard let ready else { throw GeminiStoredFileUnavailable() }
+                    files.append(ready)
+                    var reusablePart = savedPart
+                    reusablePart.index = position
+                    reusablePart.attachmentID = part.attachmentID
+                    reusablePart.role = part.role
+                    reusablePart.segmentIndex = part.segmentIndex
+                    reusablePart.sourceFingerprint = part.sourceFingerprint
+                    reusablePart.state = ready.state ?? savedPart.state
+                    reusablePart.expiresAt = parseGoogleDate(ready.expirationTime) ?? savedPart.expiresAt
+                    manifestParts.append(reusablePart)
                     let partial = RemoteMediaManifest(
                         sourceFingerprint: sourceFingerprint,
                         credentialFingerprint: credentialFingerprint,
                         baseURLFingerprint: baseURLFingerprint,
-                        parts: manifestParts,
+                        parts: mergingUnprocessedReusableParts(manifestParts),
                         expectedPartCount: uploadParts.count
                     )
                     await remoteMediaUpdate?(partial)
                     continue
+                } catch is GeminiStoredFileUnavailable {
+                    // A provider-side FAILED state is not retryable; upload only this attachment again.
+                } catch let GeminiClientError.apiError(status, _, _) where status == 404 {
+                    // Expired or deleted remote file: upload only this attachment again.
+                } catch {
+                    // A transient validation/polling failure must not create a duplicate upload.
+                    throw error
                 }
             }
             await progress?(
@@ -552,7 +663,56 @@ public actor GeminiClient {
                     sizeBytes: (try? part.url.fileSizeBytes()) ?? 0
                 )
             )
-            let uploaded = try await upload(fileURL: part.url, apiKey: config.apiKey, baseURL: config.baseURL)
+            let resumableSession = existingManifest?.pendingUploads?.first(where: {
+                $0.attachmentID == part.attachmentID &&
+                    $0.sourceFingerprint == part.sourceFingerprint &&
+                    $0.totalBytes == ((try? part.url.fileSizeBytes()) ?? -1)
+            })
+            let uploaded = try await upload(
+                operation: GeminiUploadOperation(
+                    fileURL: part.url,
+                    attachmentID: part.attachmentID,
+                    sourceFingerprint: part.sourceFingerprint,
+                    existingSession: resumableSession,
+                    apiKey: config.apiKey,
+                    baseURL: config.baseURL
+                ),
+                sessionUpdate: { session in
+                    let partial = RemoteMediaManifest(
+                        sourceFingerprint: sourceFingerprint,
+                        credentialFingerprint: credentialFingerprint,
+                        baseURLFingerprint: baseURLFingerprint,
+                        parts: mergingUnprocessedReusableParts(manifestParts),
+                        expectedPartCount: uploadParts.count,
+                        pendingUploads: session.map { [$0] }
+                    )
+                    await remoteMediaUpdate?(partial)
+                }
+            )
+            let uploadedCreatedAt = parseGoogleDate(uploaded.createTime) ?? Date()
+            var remotePart = RemoteMediaPart(
+                index: position,
+                startSeconds: part.startSeconds,
+                durationSeconds: part.durationSeconds,
+                resourceName: uploaded.name,
+                uri: uploaded.uri,
+                mimeType: uploaded.mimeType,
+                sizeBytes: (try? part.url.fileSizeBytes()) ?? 0,
+                state: uploaded.state ?? "PROCESSING",
+                createdAt: uploadedCreatedAt,
+                expiresAt: parseGoogleDate(uploaded.expirationTime) ?? uploadedCreatedAt.addingTimeInterval(48 * 3_600),
+                attachmentID: part.attachmentID,
+                role: part.role,
+                segmentIndex: part.segmentIndex,
+                sourceFingerprint: part.sourceFingerprint
+            )
+            await remoteMediaUpdate?(RemoteMediaManifest(
+                sourceFingerprint: sourceFingerprint,
+                credentialFingerprint: credentialFingerprint,
+                baseURLFingerprint: baseURLFingerprint,
+                parts: mergingUnprocessedReusableParts(manifestParts + [remotePart]),
+                expectedPartCount: uploadParts.count
+            ))
             let ready = try await waitUntilReady(
                 file: uploaded,
                 apiKey: config.apiKey,
@@ -560,27 +720,18 @@ public actor GeminiClient {
                 progress: progress
             )
             files.append(ready)
-            let createdAt = parseGoogleDate(ready.createTime) ?? Date()
-            let expiresAt = parseGoogleDate(ready.expirationTime) ?? createdAt.addingTimeInterval(48 * 3_600)
-            manifestParts.append(
-                RemoteMediaPart(
-                    index: position,
-                    startSeconds: part.startSeconds,
-                    durationSeconds: part.durationSeconds,
-                    resourceName: ready.name,
-                    uri: ready.uri,
-                    mimeType: ready.mimeType,
-                    sizeBytes: (try? part.url.fileSizeBytes()) ?? 0,
-                    state: ready.state ?? "ACTIVE",
-                    createdAt: createdAt,
-                    expiresAt: expiresAt
-                )
-            )
+            remotePart.resourceName = ready.name
+            remotePart.uri = ready.uri
+            remotePart.mimeType = ready.mimeType
+            remotePart.state = ready.state ?? "ACTIVE"
+            remotePart.createdAt = parseGoogleDate(ready.createTime) ?? uploadedCreatedAt
+            remotePart.expiresAt = parseGoogleDate(ready.expirationTime) ?? remotePart.expiresAt
+            manifestParts.append(remotePart)
             let partial = RemoteMediaManifest(
                 sourceFingerprint: sourceFingerprint,
                 credentialFingerprint: credentialFingerprint,
                 baseURLFingerprint: baseURLFingerprint,
-                parts: manifestParts,
+                parts: mergingUnprocessedReusableParts(manifestParts),
                 expectedPartCount: uploadParts.count
             )
             await remoteMediaUpdate?(partial)
@@ -594,6 +745,92 @@ public actor GeminiClient {
         )
         await remoteMediaUpdate?(manifest)
         return (files, manifest)
+    }
+
+    private func segmentedUploadAttachments(
+        segments: [RecordingSegment],
+        directory: URL
+    ) async throws -> [GeminiUploadAttachment] {
+        let sortedSegments = segments.sorted { $0.index < $1.index }
+        guard !sortedSegments.isEmpty, sortedSegments.count <= 10 else {
+            throw GeminiClientError.apiError(
+                status: 0,
+                message: "Gemini accepts at most 10 video parts in one request.",
+                context: "local media validation"
+            )
+        }
+        var attachments: [GeminiUploadAttachment] = []
+        for segment in sortedSegments {
+            let videoURL = directory.appending(path: segment.videoPath)
+            guard FileManager.default.fileExists(atPath: videoURL.path) else {
+                throw GeminiClientError.apiError(
+                    status: 0,
+                    message: "Missing video part \(segment.videoPath).",
+                    context: "local media validation"
+                )
+            }
+            let videoBytes = try videoURL.fileSizeBytes()
+            guard videoBytes <= SegmentedRecordingPolicy.maximumSegmentBytes else {
+                throw GeminiClientError.apiError(
+                    status: 0,
+                    message: "Video part \(segment.videoPath) exceeds 1.8 GB.",
+                    context: "local media validation"
+                )
+            }
+            let videoAsset = AVURLAsset(url: videoURL)
+            let videoTracks = try await videoAsset.loadTracks(withMediaType: .video)
+            let systemAudioTracks = try await videoAsset.loadTracks(withMediaType: .audio)
+            guard videoTracks.count == 1, systemAudioTracks.count == 1 else {
+                throw GeminiClientError.apiError(
+                    status: 0,
+                    message: "Part \(segment.videoPath) must contain one video and exactly one system-audio track.",
+                    context: "local media validation"
+                )
+            }
+            attachments.append(GeminiUploadAttachment(
+                attachmentID: "segment-\(segment.index)-video",
+                role: "video_system_audio",
+                segmentIndex: segment.index,
+                url: videoURL,
+                startSeconds: segment.startSeconds,
+                durationSeconds: segment.durationSeconds,
+                sourceFingerprint: try sourceFingerprint(urls: [videoURL])
+            ))
+
+            guard let microphonePath = segment.microphoneAudioPath else {
+                throw GeminiClientError.apiError(
+                    status: 0,
+                    message: "Missing microphone attachment for segment \(segment.index).",
+                    context: "local media validation"
+                )
+            }
+            let microphoneURL = directory.appending(path: microphonePath)
+            guard FileManager.default.fileExists(atPath: microphoneURL.path) else {
+                throw GeminiClientError.apiError(
+                    status: 0,
+                    message: "Missing microphone part \(microphonePath).",
+                    context: "local media validation"
+                )
+            }
+            let microphoneTracks = try await AVURLAsset(url: microphoneURL).loadTracks(withMediaType: .audio)
+            guard microphoneTracks.count == 1 else {
+                throw GeminiClientError.apiError(
+                    status: 0,
+                    message: "Microphone part \(microphonePath) must contain exactly one audio track.",
+                    context: "local media validation"
+                )
+            }
+            attachments.append(GeminiUploadAttachment(
+                attachmentID: "segment-\(segment.index)-microphone",
+                role: "microphone_audio",
+                segmentIndex: segment.index,
+                url: microphoneURL,
+                startSeconds: segment.startSeconds,
+                durationSeconds: segment.durationSeconds,
+                sourceFingerprint: try sourceFingerprint(urls: [microphoneURL])
+            ))
+        }
+        return attachments
     }
 
     private func validateManifest(_ manifest: RemoteMediaManifest, config: AppConfig) async -> Bool {
@@ -643,20 +880,13 @@ public actor GeminiClient {
         return formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
     }
 
-    private func upload(fileURL: URL, apiKey: String, baseURL: String) async throws -> GeminiFile {
+    private func upload(
+        operation: GeminiUploadOperation,
+        sessionUpdate: (RemoteUploadSession?) async -> Void
+    ) async throws -> GeminiFile {
+        let fileURL = operation.fileURL
         let fileSize = try fileURL.fileSizeBytes()
         let mimeType = fileURL.mimeType
-        let startURL = try uploadEndpoint(path: "v1beta/files", baseURL: baseURL, apiKey: apiKey)
-
-        var startRequest = URLRequest(url: startURL)
-        startRequest.httpMethod = "POST"
-        startRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        startRequest.setValue("resumable", forHTTPHeaderField: "X-Goog-Upload-Protocol")
-        startRequest.setValue("start", forHTTPHeaderField: "X-Goog-Upload-Command")
-        startRequest.setValue("\(fileSize)", forHTTPHeaderField: "X-Goog-Upload-Header-Content-Length")
-        startRequest.setValue(mimeType, forHTTPHeaderField: "X-Goog-Upload-Header-Content-Type")
-
-        let startBody = try encoder.encode(StartUploadRequest(file: StartUploadFile(displayName: fileURL.lastPathComponent)))
         let uploadPhase = AIProcessingPhase.uploadingMedia(
             provider: AIProviderID.gemini.displayName,
             fileName: fileURL.lastPathComponent,
@@ -664,75 +894,192 @@ public actor GeminiClient {
             totalFiles: 1,
             sizeBytes: fileSize
         )
-        let (startData, startResponse) = try await withTransientRetry(operation: "Gemini upload start") {
+        var uploadURL: URL?
+        var offset: Int64 = 0
+        if let existingSession = operation.existingSession,
+           Date().timeIntervalSince(existingSession.updatedAt) < 24 * 3_600,
+           let savedURL = URL(string: existingSession.uploadURL) {
+            do {
+                let remoteOffset = try await uploadedByteOffset(uploadURL: savedURL)
+                if remoteOffset >= 0, remoteOffset <= fileSize {
+                    uploadURL = savedURL
+                    offset = remoteOffset
+                    AppLog.info(
+                        "Resuming persisted Gemini upload attachment=\(operation.attachmentID) offset=\(remoteOffset)",
+                        category: .ai
+                    )
+                }
+            } catch {
+                AppLog.warning("Persisted Gemini upload session is no longer valid; starting a new one", category: .ai)
+            }
+        }
+        if uploadURL == nil {
+            uploadURL = try await startUploadSession(
+                operation: operation,
+                fileSize: fileSize,
+                mimeType: mimeType,
+                uploadPhase: uploadPhase
+            )
+            offset = 0
+        }
+        guard let uploadURL else { throw GeminiClientError.uploadURLMissing }
+        await sessionUpdate(RemoteUploadSession(
+            attachmentID: operation.attachmentID,
+            sourceFingerprint: operation.sourceFingerprint,
+            uploadURL: uploadURL.absoluteString,
+            uploadedBytes: offset,
+            totalBytes: fileSize
+        ))
+        let (responseData, response) = try await uploadInChunks(
+            transfer: GeminiUploadTransfer(
+                fileURL: fileURL,
+                fileSize: fileSize,
+                uploadURL: uploadURL,
+                initialOffset: offset,
+                uploadPhase: uploadPhase
+            ),
+            progress: { uploadedBytes in
+                await sessionUpdate(RemoteUploadSession(
+                    attachmentID: operation.attachmentID,
+                    sourceFingerprint: operation.sourceFingerprint,
+                    uploadURL: uploadURL.absoluteString,
+                    uploadedBytes: uploadedBytes,
+                    totalBytes: fileSize
+                ))
+            }
+        )
+        try validate(response, data: responseData, context: "POST resumable upload session")
+        await sessionUpdate(nil)
+        return try decoder.decode(FileUploadResponse.self, from: responseData).file
+    }
+
+    private func startUploadSession(
+        operation: GeminiUploadOperation,
+        fileSize: Int64,
+        mimeType: String,
+        uploadPhase: AIProcessingPhase
+    ) async throws -> URL {
+        let startURL = try uploadEndpoint(
+            path: "v1beta/files",
+            baseURL: operation.baseURL,
+            apiKey: operation.apiKey
+        )
+        var request = URLRequest(url: startURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("resumable", forHTTPHeaderField: "X-Goog-Upload-Protocol")
+        request.setValue("start", forHTTPHeaderField: "X-Goog-Upload-Command")
+        request.setValue("\(fileSize)", forHTTPHeaderField: "X-Goog-Upload-Header-Content-Length")
+        request.setValue(mimeType, forHTTPHeaderField: "X-Goog-Upload-Header-Content-Type")
+        let body = try encoder.encode(StartUploadRequest(
+            file: StartUploadFile(displayName: operation.fileURL.lastPathComponent)
+        ))
+        let (data, response) = try await withTransientRetry(operation: "Gemini upload start") {
             try await AIHTTPClient.data(
-                for: startRequest,
-                body: startBody,
+                for: request,
+                body: body,
                 session: urlSession,
                 phase: uploadPhase,
                 timeout: AIHTTPTimeouts.uploadStart
             )
         }
-        try validate(startResponse, data: startData, context: "POST \(sanitizedEndpoint(startURL))")
-        guard let http = startResponse as? HTTPURLResponse,
-              let uploadURLString = http.value(forHTTPHeaderField: "X-Goog-Upload-URL"),
-              let uploadURL = URL(string: uploadURLString) else {
+        try validate(response, data: data, context: "POST \(sanitizedEndpoint(startURL))")
+        guard let http = response as? HTTPURLResponse,
+              let value = http.value(forHTTPHeaderField: "X-Goog-Upload-URL"),
+              let url = URL(string: value) else {
             throw GeminiClientError.uploadURLMissing
         }
-
-        let (responseData, response) = try await uploadResumably(
-            fileURL: fileURL,
-            fileSize: fileSize,
-            uploadURL: uploadURL
-        )
-        try validate(response, data: responseData, context: "POST resumable upload session")
-        return try decoder.decode(FileUploadResponse.self, from: responseData).file
+        return url
     }
 
-    private func uploadResumably(fileURL: URL, fileSize: Int64, uploadURL: URL) async throws -> (Data, URLResponse) {
-        var offset: Int64 = 0
-        var lastError: Error?
-        for attempt in 0..<3 {
-            try Task.checkCancellation()
-            let uploadFile: URL
-            if offset == 0 {
-                uploadFile = fileURL
-            } else {
-                uploadFile = try makeUploadRemainder(sourceURL: fileURL, offset: offset)
-            }
-            defer {
-                if uploadFile != fileURL {
-                    try? FileManager.default.removeItem(at: uploadFile)
-                }
-            }
-
-            var request = URLRequest(url: uploadURL)
+    private func uploadInChunks(
+        transfer: GeminiUploadTransfer,
+        progress: (Int64) async -> Void
+    ) async throws -> (Data, URLResponse) {
+        let chunkBytes = 32 * 1_048_576
+        let handle = try FileHandle(forReadingFrom: transfer.fileURL)
+        defer { try? handle.close() }
+        var offset = transfer.initialOffset
+        var consecutiveFailures = 0
+        if offset == transfer.fileSize {
+            var request = URLRequest(url: transfer.uploadURL)
             request.httpMethod = "POST"
-            request.setValue("\(max(0, fileSize - offset))", forHTTPHeaderField: "Content-Length")
+            request.setValue("0", forHTTPHeaderField: "Content-Length")
             request.setValue("\(offset)", forHTTPHeaderField: "X-Goog-Upload-Offset")
-            request.setValue("upload, finalize", forHTTPHeaderField: "X-Goog-Upload-Command")
-            request.timeoutInterval = AIHTTPTimeouts.mediaUpload
+            request.setValue("finalize", forHTTPHeaderField: "X-Goog-Upload-Command")
+            return try await AIHTTPClient.data(
+                for: request,
+                body: Data(),
+                session: urlSession,
+                phase: transfer.uploadPhase,
+                timeout: AIHTTPTimeouts.mediaUpload
+            )
+        }
+        while offset < transfer.fileSize {
+            try Task.checkCancellation()
+            try handle.seek(toOffset: UInt64(offset))
+            let requestedBytes = Int(min(Int64(chunkBytes), transfer.fileSize - offset))
+            let body = try handle.read(upToCount: requestedBytes) ?? Data()
+            guard body.count == requestedBytes else {
+                throw GeminiClientError.apiError(
+                    status: 0,
+                    message: "Could not read the next media upload chunk.",
+                    context: "local resumable upload"
+                )
+            }
+            let isFinal = offset + Int64(body.count) == transfer.fileSize
+            var request = URLRequest(url: transfer.uploadURL)
+            request.httpMethod = "POST"
+            request.setValue("\(body.count)", forHTTPHeaderField: "Content-Length")
+            request.setValue("\(offset)", forHTTPHeaderField: "X-Goog-Upload-Offset")
+            request.setValue(isFinal ? "upload, finalize" : "upload", forHTTPHeaderField: "X-Goog-Upload-Command")
             do {
-                let result = try await urlSession.upload(for: request, fromFile: uploadFile)
-                try validate(result.1, data: result.0, context: "POST resumable upload session")
-                return result
+                let result = try await AIHTTPClient.data(
+                    for: request,
+                    body: body,
+                    session: urlSession,
+                    phase: transfer.uploadPhase,
+                    timeout: AIHTTPTimeouts.mediaUpload
+                )
+                try validateUploadChunk(response: result.1, data: result.0, isFinal: isFinal)
+                offset += Int64(body.count)
+                consecutiveFailures = 0
+                await progress(offset)
+                if isFinal { return result }
             } catch {
-                lastError = error
-                guard attempt < 2, !error.isRateLimitLike, error.isRetryableTransportOrProviderFailure else { throw error }
-                offset = try await uploadedByteOffset(uploadURL: uploadURL)
-                guard offset >= 0, offset <= fileSize else {
+                guard !error.isRateLimitLike, error.isRetryableTransportOrProviderFailure else { throw error }
+                consecutiveFailures += 1
+                guard consecutiveFailures <= 3 else { throw error }
+                offset = try await uploadedByteOffset(uploadURL: transfer.uploadURL)
+                guard offset >= 0, offset <= transfer.fileSize else {
                     throw GeminiClientError.apiError(
                         status: 0,
                         message: "Gemini returned an invalid resumable upload offset.",
                         context: "resumable upload query"
                     )
                 }
-                let delay = UInt64(3 * (1 << attempt))
+                await progress(offset)
+                let delay = UInt64(3 * (1 << (consecutiveFailures - 1)))
                 AppLog.warning("Gemini upload interrupted; resuming at byte \(offset) in \(delay)s", category: .ai)
                 try await Task.sleep(for: .seconds(delay))
             }
         }
-        throw lastError ?? GeminiClientError.emptyResponse
+        throw GeminiClientError.apiError(
+            status: 0,
+            message: "Upload session was already finalized but returned no file metadata.",
+            context: "resumable upload"
+        )
+    }
+
+    private func validateUploadChunk(response: URLResponse, data: Data, isFinal: Bool) throws {
+        guard let http = response as? HTTPURLResponse else {
+            throw GeminiClientError.apiError(status: 0, message: "Invalid HTTP response.", context: "resumable upload")
+        }
+        if isFinal {
+            try validate(response, data: data, context: "POST resumable upload session")
+        } else if !(200..<400).contains(http.statusCode) {
+            try validate(response, data: data, context: "POST resumable upload chunk")
+        }
     }
 
     private func uploadedByteOffset(uploadURL: URL) async throws -> Int64 {
@@ -760,22 +1107,6 @@ public actor GeminiClient {
             return 0
         }
         return offset
-    }
-
-    private func makeUploadRemainder(sourceURL: URL, offset: Int64) throws -> URL {
-        let outputURL = FileManager.default.temporaryDirectory.appending(path: ".steno-upload-\(UUID().uuidString)")
-        FileManager.default.createFile(atPath: outputURL.path, contents: nil)
-        let source = try FileHandle(forReadingFrom: sourceURL)
-        let destination = try FileHandle(forWritingTo: outputURL)
-        defer {
-            try? source.close()
-            try? destination.close()
-        }
-        try source.seek(toOffset: UInt64(offset))
-        while let chunk = try source.read(upToCount: 1_048_576), !chunk.isEmpty {
-            try destination.write(contentsOf: chunk)
-        }
-        return outputURL
     }
 
     private func waitUntilReady(
@@ -870,7 +1201,8 @@ public actor GeminiClient {
             systemInstruction: Content(
                 role: nil,
                 parts: [ContentPart(fileData: nil, text: PromptSecurity.systemPrompt(for: request.agent))]
-            )
+            ),
+            generationConfig: request.useLowMediaResolution ? .lowMediaResolution : nil
         )
 
         return try await performGenerate(body: body, config: request.config, usageKind: request.usageKind)
@@ -880,7 +1212,9 @@ public actor GeminiClient {
         let sortedParts = manifest.parts.sorted { $0.index < $1.index }
         return zip(files, sortedParts).flatMap { file, part in
             let end = part.startSeconds + part.durationSeconds
-            let label = "<media_part index=\"\(part.index + 1)\" absolute_start_seconds=\"\(formatSeconds(part.startSeconds))\" absolute_end_seconds=\"\(formatSeconds(end))\" />"
+            let role = part.role ?? "media"
+            let segmentIndex = part.segmentIndex.map(String.init) ?? String(part.index)
+            let label = "<media_part index=\"\(part.index + 1)\" segment_index=\"\(segmentIndex)\" role=\"\(role)\" absolute_start_seconds=\"\(formatSeconds(part.startSeconds))\" absolute_end_seconds=\"\(formatSeconds(end))\" />"
             return [
                 ContentPart(fileData: nil, text: label),
                 ContentPart(fileData: FileData(mimeType: file.mimeType, fileURI: file.uri), text: nil)
@@ -1224,9 +1558,40 @@ private struct GeminiFile: Codable, Hashable, Sendable {
 private struct GeminiMediaRequest: Sendable {
     var videoURL: URL
     var audioURLs: [URL]
+    var recordingSegments: [RecordingSegment]
+    var mediaDirectory: URL?
     var existingManifest: RemoteMediaManifest?
     var config: AppConfig
 }
+
+private struct GeminiUploadAttachment: Sendable {
+    var attachmentID: String
+    var role: String
+    var segmentIndex: Int?
+    var url: URL
+    var startSeconds: Double
+    var durationSeconds: Double
+    var sourceFingerprint: String
+}
+
+private struct GeminiUploadOperation: Sendable {
+    var fileURL: URL
+    var attachmentID: String
+    var sourceFingerprint: String
+    var existingSession: RemoteUploadSession?
+    var apiKey: String
+    var baseURL: String
+}
+
+private struct GeminiUploadTransfer: Sendable {
+    var fileURL: URL
+    var fileSize: Int64
+    var uploadURL: URL
+    var initialOffset: Int64
+    var uploadPhase: AIProcessingPhase
+}
+
+private struct GeminiStoredFileUnavailable: Error, Sendable {}
 
 private struct ReportContentRequest: Sendable {
     var files: [GeminiFile]
@@ -1235,11 +1600,25 @@ private struct ReportContentRequest: Sendable {
     var config: AppConfig
     var agent: Agent
     var usageKind: GeminiUsageKind
+    var useLowMediaResolution: Bool
 }
 
 private struct GenerateContentRequest: Codable {
     var contents: [Content]
     var systemInstruction: Content
+    var generationConfig: GenerationConfig?
+
+    init(contents: [Content], systemInstruction: Content, generationConfig: GenerationConfig? = nil) {
+        self.contents = contents
+        self.systemInstruction = systemInstruction
+        self.generationConfig = generationConfig
+    }
+}
+
+private struct GenerationConfig: Codable {
+    var mediaResolution: String
+
+    static let lowMediaResolution = GenerationConfig(mediaResolution: "MEDIA_RESOLUTION_LOW")
 }
 
 private struct Content: Codable {
