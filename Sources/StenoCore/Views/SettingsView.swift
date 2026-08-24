@@ -25,7 +25,7 @@ public struct SettingsView: View {
             Divider()
 
             HStack {
-                Link("Version 2.0.0-native", destination: AppLinks.repository)
+                Link("Version 2.1.0-native", destination: AppLinks.repository)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .help("Open Steno on GitHub")
@@ -46,13 +46,8 @@ public struct SettingsView: View {
     private var generalTab: some View {
         Form {
             Section("AI") {
-                Picker("Провайдер", selection: $viewModel.config.aiProviderID) {
-                    ForEach(AIProviderID.allCases) { provider in
-                        Text(provider.displayName).tag(provider.rawValue)
-                    }
-                }
-                .onChange(of: viewModel.config.aiProviderID) { _, newValue in
-                    viewModel.selectAIProvider(newValue)
+                LabeledContent("Провайдер") {
+                    Text(AIProviderID.gemini.displayName).foregroundStyle(.secondary)
                 }
 
                 Picker("Модель", selection: $viewModel.config.modelName) {
@@ -65,7 +60,7 @@ public struct SettingsView: View {
                     }
                 }
                 LabeledContent("Статус каталога") {
-                    Text(viewModel.modelsForSelectedProvider.contains { $0.isDynamicallyVerified } ? "dynamic video-verified" : "documented allowlist")
+                    Text("официальные latest aliases")
                         .foregroundStyle(.secondary)
                 }
                 providerCredentialsFields
@@ -79,7 +74,7 @@ public struct SettingsView: View {
                             ProgressView()
                                 .controlSize(.small)
                         } else {
-                            Text("Обновить video-модели")
+                            Text("Обновить модели")
                         }
                     }
                     .disabled(viewModel.isRefreshingAIModels)
@@ -98,6 +93,39 @@ public struct SettingsView: View {
                     if let newStatus, newStatus.matches(config: viewModel.config) {
                         isConnectionStatusPopoverPresented = true
                     }
+                }
+
+                if let usage = viewModel.geminiUsageSnapshot {
+                    Divider()
+                    LabeledContent("Остаток Google") { Text("недоступен через API").foregroundStyle(.secondary) }
+                    LabeledContent("Использовано Steno сегодня") {
+                        Text("\(usage.successfulRequestsToday)/\(usage.requestsToday) запросов · \(StenoFormatters.tokens(usage.tokensToday.total)) токенов")
+                            .foregroundStyle(.secondary)
+                    }
+                    LabeledContent("За последнюю минуту") { Text("\(usage.requestsLastMinute) запросов").foregroundStyle(.secondary) }
+                    ForEach(usage.tokensByModelToday.keys.sorted(), id: \.self) { model in
+                        LabeledContent(model) {
+                            Text("\(StenoFormatters.tokens(usage.tokensByModelToday[model]?.total ?? 0)) токенов")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    LabeledContent("Назначение запросов") {
+                        Text(usage.requestsByKindToday
+                            .sorted { $0.key.rawValue < $1.key.rawValue }
+                            .map { "\($0.key.rawValue): \($0.value)" }
+                            .joined(separator: " · "))
+                            .foregroundStyle(.secondary)
+                    }
+                    LabeledContent("Сброс RPD") { Text(usage.nextDailyReset.formatted(date: .abbreviated, time: .standard)).foregroundStyle(.secondary) }
+                    if let blockedUntil = usage.blockedUntil {
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            LabeledContent("Повтор запросов") {
+                                Text(retryCountdown(until: blockedUntil, now: context.date))
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                    }
+                    Link("Точные лимиты в Google AI Studio", destination: URL(string: "https://aistudio.google.com/usage")!)
                 }
             }
 
@@ -133,9 +161,18 @@ public struct SettingsView: View {
                 }
                 videoQualityDetails
                 Toggle("Отображать время записи", isOn: $viewModel.config.showRecordingTime)
+                Toggle("Разбивать большие видео для Gemini", isOn: $viewModel.config.splitLargeMediaEnabled)
+                Text("Если включено, AI-копия записи свыше 400 MiB или 40 минут будет разбита на части. Оригинал не изменяется. По умолчанию выключено.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Audio") {
+                Toggle("Записывать системный звук", isOn: $viewModel.config.systemAudioEnabled)
+                Toggle("Записывать микрофон", isOn: $viewModel.config.microphoneEnabled)
+                Text("Во время записи эти источники можно переключать в toolbar или tray; отключенный источник записывается как тишина.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 LabeledContent("Microphone Input Volume") {
                     Slider(
                         value: Binding(
@@ -174,6 +211,11 @@ public struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private func retryCountdown(until date: Date, now: Date) -> String {
+        let seconds = max(0, Int(date.timeIntervalSince(now).rounded(.up)))
+        return seconds == 0 ? "можно повторить сейчас" : "через \(seconds) сек."
     }
 
     @ViewBuilder

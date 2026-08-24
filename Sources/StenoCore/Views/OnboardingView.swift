@@ -18,7 +18,7 @@ public struct OnboardingView: View {
                     .foregroundStyle(.blue)
                 Text("Настройка Steno")
                     .font(.title.weight(.semibold))
-                Text("Для записи встреч нужны права macOS и AI API Key. По умолчанию используется Gemini; провайдера можно сменить в Settings.")
+                Text("Для записи встреч нужны права macOS и Google Gemini API Key.")
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
@@ -78,6 +78,19 @@ public struct OnboardingView: View {
             }
             .padding()
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Остаток Google: недоступен через API")
+                    .font(.caption.weight(.medium))
+                if let usage = viewModel.geminiUsageSnapshot {
+                    Text("Steno сегодня: \(usage.successfulRequestsToday) успешных запросов, \(StenoFormatters.tokens(usage.tokensToday.total)) токенов")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Link("Точные лимиты проекта в Google AI Studio", destination: URL(string: "https://aistudio.google.com/usage")!)
+                    .font(.caption)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             Spacer()
 

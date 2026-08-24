@@ -2,6 +2,7 @@ import AppKit
 import AVKit
 import Combine
 import SwiftUI
+import UniformTypeIdentifiers
 
 public struct ContentView: View {
     @Bindable private var viewModel: AppViewModel
@@ -145,6 +146,24 @@ private struct MainWindowToolbar: View {
                 .help("Agent for AI report generation")
 
                 Button {
+                    viewModel.toggleSystemAudioCapture()
+                } label: {
+                    Image(systemName: viewModel.config.systemAudioEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                }
+                .tint(viewModel.config.systemAudioEnabled ? .accentColor : .secondary)
+                .help(viewModel.config.systemAudioEnabled ? "Disable system audio" : "Enable system audio")
+                .disabled(viewModel.isFinalizingRecording)
+
+                Button {
+                    viewModel.toggleMicrophoneCapture()
+                } label: {
+                    Image(systemName: viewModel.config.microphoneEnabled ? "mic.fill" : "mic.slash.fill")
+                }
+                .tint(viewModel.config.microphoneEnabled ? .accentColor : .secondary)
+                .help(viewModel.config.microphoneEnabled ? "Disable microphone" : "Enable microphone")
+                .disabled(viewModel.isFinalizingRecording)
+
+                Button {
                     toggleRecording()
                 } label: {
                     ToolbarButtonLabel(title: recordingButtonTitle, systemImage: recordingButtonIcon)
@@ -213,43 +232,43 @@ private struct SidebarView: View {
     @Binding var showDeleteConfirmation: Bool
     @State private var renamingSessionID: MeetingSession.ID?
     @State private var renameText = ""
+    @State private var renamingFolderID: String?
+    @State private var folderRenameText = ""
+    @State private var showCreateFolder = false
+    @State private var newFolderName = ""
+    @State private var folderPendingDeletion: RecordingFolder?
+    @State private var showImporter = false
+    @State private var importTargetFolderID: String?
+    @State private var isFileDropTarget = false
 
     var body: some View {
         List(selection: $viewModel.selectedSessionID) {
-            Section("Recordings") {
-                if viewModel.sessions.isEmpty {
+            Section {
+                if viewModel.sessions.isEmpty && viewModel.folders.isEmpty {
                     SidebarPlaceholderRow()
                 } else {
-                    ForEach(viewModel.sessions) { session in
-                        SessionRow(
-                            session: session,
-                            isRenaming: renamingSessionID == session.id,
-                            renameText: $renameText,
-                            onRenameButton: {
-                                if renamingSessionID == session.id {
-                                    commitRename(session)
-                                } else {
-                                    beginRename(session)
-                                }
-                            },
-                            onCommitRename: {
-                                commitRename(session)
-                            },
-                            onCancelRename: cancelRename,
-                            onDelete: {
-                                requestDelete(session)
-                            }
-                        )
-                            .tag(session.id)
-                            .contextMenu {
-                                Button("Rename") {
-                                    beginRename(session)
-                                }
-                                Button("Delete", role: .destructive) {
-                                    requestDelete(session)
-                                }
-                            }
+                    recordingGroup(title: "Без папки", systemImage: "tray", folderID: nil, sessions: rootSessions)
+                    ForEach(viewModel.folders) { folder in
+                        folderGroup(folder)
                     }
+                }
+            } header: {
+                HStack {
+                    Text("Recordings")
+                    Spacer()
+                    Menu {
+                        Button("Новая папка", systemImage: "folder.badge.plus") {
+                            newFolderName = ""
+                            showCreateFolder = true
+                        }
+                        Button("Импорт записи", systemImage: "square.and.arrow.down") {
+                            importTargetFolderID = nil
+                            showImporter = true
+                        }
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .menuStyle(.borderlessButton)
                 }
             }
 
@@ -258,11 +277,173 @@ private struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        .onDrop(of: [.fileURL], isTargeted: $isFileDropTarget) { providers in
+            handleDrop(providers, folderID: nil)
+        }
+        .overlay {
+            if isFileDropTarget {
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.accentColor.opacity(0.12))
+                    .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [7]))
+                    .overlay {
+                        Label("Импортировать запись", systemImage: "square.and.arrow.down")
+                            .font(.headline)
+                            .padding(12)
+                            .background(.regularMaterial, in: Capsule())
+                    }
+                    .padding(8)
+                    .allowsHitTesting(false)
+            }
+        }
         .onChange(of: viewModel.sessions.map(\.id)) { _, sessionIDs in
             if let renamingSessionID, !sessionIDs.contains(renamingSessionID) {
                 cancelRename()
             }
         }
+        .onChange(of: viewModel.selectedSessionID) { _, selectedID in
+            guard let selectedID,
+                  let session = viewModel.sessions.first(where: { $0.id == selectedID }) else { return }
+            viewModel.select(session)
+        }
+        .alert("Новая папка", isPresented: $showCreateFolder) {
+            TextField("Название", text: $newFolderName)
+            Button("Создать") { viewModel.createFolder(name: newFolderName) }
+            Button("Отмена", role: .cancel) {}
+        }
+        .confirmationDialog(
+            "Удалить папку «\(folderPendingDeletion?.name ?? "")»?",
+            isPresented: Binding(
+                get: { folderPendingDeletion != nil },
+                set: { if !$0 { folderPendingDeletion = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Удалить папку и записи", role: .destructive) {
+                if let folderPendingDeletion { viewModel.deleteFolder(id: folderPendingDeletion.id, deleteRecordings: true) }
+                folderPendingDeletion = nil
+            }
+            Button("Удалить только папку") {
+                if let folderPendingDeletion { viewModel.deleteFolder(id: folderPendingDeletion.id, deleteRecordings: false) }
+                folderPendingDeletion = nil
+            }
+            Button("Отмена", role: .cancel) { folderPendingDeletion = nil }
+        } message: {
+            Text("Записи можно удалить вместе с папкой или перенести в корень.")
+        }
+        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.movie], allowsMultipleSelection: false) { result in
+            guard case let .success(urls) = result, let url = urls.first else {
+                if case let .failure(error) = result { viewModel.errorMessage = "Import failed: \(error.localizedDescription)" }
+                return
+            }
+            Task { await viewModel.importRecording(from: url, folderID: importTargetFolderID) }
+        }
+    }
+
+    private var rootSessions: [MeetingSession] {
+        viewModel.sessions.filter { $0.metadata.folderID == nil }
+    }
+
+    @ViewBuilder
+    private func folderGroup(_ folder: RecordingFolder) -> some View {
+        DisclosureGroup {
+            let sessions = viewModel.sessions.filter { $0.metadata.folderID == folder.id }
+            if sessions.isEmpty {
+                Text("Пустая папка").font(.caption).foregroundStyle(.tertiary)
+            } else {
+                sessionRows(sessions)
+            }
+        } label: {
+            HStack {
+                Image(systemName: "folder")
+                if renamingFolderID == folder.id {
+                    TextField("Название папки", text: $folderRenameText)
+                        .onSubmit { commitFolderRename(folder) }
+                        .onExitCommand { cancelFolderRename() }
+                } else {
+                    Text(folder.name)
+                }
+                Spacer()
+            }
+            .contentShape(Rectangle())
+            .onDrop(of: [.text, .fileURL], isTargeted: nil) { providers in
+                handleDrop(providers, folderID: folder.id)
+            }
+            .contextMenu {
+                Button("Переименовать") { beginFolderRename(folder) }
+                Button("Импортировать сюда") {
+                    importTargetFolderID = folder.id
+                    showImporter = true
+                }
+                Divider()
+                Button("Удалить", role: .destructive) {
+                    if viewModel.sessions.contains(where: { $0.metadata.folderID == folder.id }) {
+                        folderPendingDeletion = folder
+                    } else {
+                        viewModel.deleteFolder(id: folder.id, deleteRecordings: false)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func recordingGroup(title: String, systemImage: String, folderID: String?, sessions: [MeetingSession]) -> some View {
+        DisclosureGroup {
+            if sessions.isEmpty {
+                Text("Нет записей").font(.caption).foregroundStyle(.tertiary)
+            } else {
+                sessionRows(sessions)
+            }
+        } label: {
+            Label(title, systemImage: systemImage)
+                .contentShape(Rectangle())
+                .onDrop(of: [.text, .fileURL], isTargeted: nil) { providers in
+                    handleDrop(providers, folderID: folderID)
+                }
+        }
+    }
+
+    @ViewBuilder
+    private func sessionRows(_ sessions: [MeetingSession]) -> some View {
+        ForEach(sessions) { session in
+            SessionRow(
+                session: session,
+                isRenaming: renamingSessionID == session.id,
+                renameText: $renameText,
+                onRenameButton: {
+                    renamingSessionID == session.id ? commitRename(session) : beginRename(session)
+                },
+                onCommitRename: { commitRename(session) },
+                onCancelRename: cancelRename,
+                onDelete: { requestDelete(session) }
+            )
+            .tag(session.id)
+            .onDrag { NSItemProvider(object: session.id as NSString) }
+            .contextMenu {
+                Button("Rename") { beginRename(session) }
+                Button("Delete", role: .destructive) { requestDelete(session) }
+            }
+        }
+    }
+
+    private func handleDrop(_ providers: [NSItemProvider], folderID: String?) -> Bool {
+        guard let provider = providers.first else { return false }
+        if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+            provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
+                guard let data,
+                      let url = URL(dataRepresentation: data, relativeTo: nil),
+                      url.isFileURL else { return }
+                Task { @MainActor in
+                    await viewModel.importRecording(from: url, folderID: folderID)
+                }
+            }
+            return true
+        }
+        provider.loadObject(ofClass: NSString.self) { object, _ in
+            guard let id = object as? String else { return }
+            Task { @MainActor in viewModel.moveSession(id: id, toFolderID: folderID) }
+        }
+        return true
     }
 
     private func beginRename(_ session: MeetingSession) {
@@ -292,6 +473,21 @@ private struct SidebarView: View {
     private func requestDelete(_ session: MeetingSession) {
         viewModel.selectedSessionID = session.id
         showDeleteConfirmation = true
+    }
+
+    private func beginFolderRename(_ folder: RecordingFolder) {
+        renamingFolderID = folder.id
+        folderRenameText = folder.name
+    }
+
+    private func commitFolderRename(_ folder: RecordingFolder) {
+        viewModel.renameFolder(id: folder.id, to: folderRenameText)
+        cancelFolderRename()
+    }
+
+    private func cancelFolderRename() {
+        renamingFolderID = nil
+        folderRenameText = ""
     }
 }
 
@@ -408,8 +604,8 @@ private struct DetailView: View {
         if let session = viewModel.selectedSession {
             VStack(spacing: 0) {
                 Picker("Content", selection: $viewModel.selectedTabID) {
-                    ForEach(session.sortedReportAgentIDs, id: \.self) { agentID in
-                        Text(agentName(agentID)).tag("report:\(agentID)")
+                    if !session.availableReports.isEmpty {
+                        Text("Protocols").tag("reports")
                     }
                     Text("Player").tag("player")
                     Text("Info").tag("info")
@@ -424,9 +620,8 @@ private struct DetailView: View {
                 case "info":
                     InfoPane(session: session)
                 default:
-                    if viewModel.selectedTabID.hasPrefix("report:") {
-                        let agentID = String(viewModel.selectedTabID.dropFirst("report:".count))
-                        ReportPane(viewModel: viewModel, agentID: agentID)
+                    if viewModel.selectedTabID == "reports" {
+                        ReportPane(viewModel: viewModel)
                     } else {
                         PlayerPane(session: session)
                     }
@@ -438,9 +633,6 @@ private struct DetailView: View {
         }
     }
 
-    private func agentName(_ agentID: String) -> String {
-        viewModel.config.agent(id: agentID)?.name ?? agentID
-    }
 }
 
 private struct SidebarActionIconButton: View {
@@ -464,29 +656,299 @@ private struct SidebarActionIconButton: View {
 
 private struct ReportPane: View {
     @Bindable var viewModel: AppViewModel
-    var agentID: String
+
+    var body: some View {
+        if let session = viewModel.selectedSession, let report = viewModel.selectedReport {
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    Picker("Version", selection: Binding(
+                        get: { viewModel.selectedReportID ?? report.id },
+                        set: { viewModel.selectReport(id: $0) }
+                    )) {
+                        ForEach(session.availableReports) { item in
+                            Text(reportTitle(item)).tag(item.id)
+                        }
+                    }
+                    .frame(maxWidth: 360)
+                    Spacer()
+                }
+                .padding(.horizontal)
+                .padding(.bottom, 8)
+
+                ChatPane(
+                    viewModel: viewModel,
+                    reportID: report.id,
+                    reportText: viewModel.loadReportText(reportID: report.id)
+                )
+            }
+        } else {
+            ContentUnavailableView("No protocol", systemImage: "doc.text")
+        }
+    }
+
+    private func reportTitle(_ report: ReportInfo) -> String {
+        let agent = report.agentName.isEmpty ? report.agentID : report.agentName
+        let date = ISO8601DateFormatter().date(from: report.createdAt)?.formatted(date: .abbreviated, time: .shortened)
+            ?? report.createdAt
+        return "\(agent) · \(date)"
+    }
+}
+
+private struct ChatPane: View {
+    @Bindable var viewModel: AppViewModel
+    var reportID: String
+    var reportText: String
+    @State private var question = ""
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Spacer()
-                Button {
-                    viewModel.copyReport(agentID: agentID)
-                } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
+            RemoteMediaStatusView(availability: viewModel.remoteMediaAvailability)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 8)
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 12) {
+                        ProtocolMessageBubble(markdown: reportText) {
+                            viewModel.copySelectedReport()
+                        } save: { updatedText in
+                            viewModel.saveSelectedReport(updatedText)
+                        }
+                        .id("protocol:\(reportID)")
+
+                        HStack {
+                            Text("Чат по записи")
+                                .font(.headline)
+                            Spacer()
+                        }
+                        .padding(.top, 8)
+
+                        ForEach(viewModel.chatThread?.messages ?? []) { message in
+                            ChatMessageBubble(message: message) {
+                                viewModel.retryChatMessage(id: message.id)
+                            }
+                            .id(message.id)
+                        }
+                    }
+                    .padding(20)
+                }
+                .onChange(of: viewModel.chatThread?.messages.count) { _, _ in
+                    if let id = viewModel.chatThread?.messages.last?.id {
+                        withAnimation { proxy.scrollTo(id, anchor: .bottom) }
+                    }
                 }
             }
-            .padding(.horizontal)
-            .padding(.bottom, 8)
 
-            ScrollView {
-                MarkdownReportView(markdown: viewModel.loadReportText(agentID: agentID))
-                    .frame(maxWidth: 860, alignment: .leading)
-                    .padding(.horizontal, 36)
-                    .padding(.vertical, 24)
+            Divider()
+            if let blockedUntil = viewModel.geminiUsageSnapshot?.blockedUntil {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    if blockedUntil > context.date {
+                        Text("Gemini разрешит повтор через \(max(0, Int(blockedUntil.timeIntervalSince(context.date).rounded(.up)))) сек.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .padding(.horizontal, 14)
+                            .padding(.top, 8)
+                    }
+                }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            HStack(alignment: .bottom, spacing: 10) {
+                TextField("Задайте вопрос по записи…", text: $question, axis: .vertical)
+                    .lineLimit(1...5)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(send)
+                if viewModel.isSendingChatMessage {
+                    Button("Cancel") { viewModel.cancelChatMessage() }
+                } else {
+                    Button(action: send) { Image(systemName: "paperplane.fill") }
+                        .disabled(
+                            question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                                (viewModel.geminiUsageSnapshot?.blockedUntil ?? .distantPast) > Date()
+                        )
+                }
+            }
+            .padding(14)
         }
+    }
+
+    private func send() {
+        let value = question
+        question = ""
+        viewModel.sendChatMessage(value)
+    }
+}
+
+private struct RemoteMediaStatusView: View {
+    var availability: RemoteMediaAvailability
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            indicator
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.subheadline.weight(.medium))
+                Text(subtitle).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    @ViewBuilder private var indicator: some View {
+        switch availability {
+        case .uploading:
+            ProgressView().controlSize(.small)
+        case .available:
+            Image(systemName: "circle.fill").foregroundStyle(.green)
+        case .expired:
+            Image(systemName: "circle.fill").foregroundStyle(.yellow)
+        case .failed:
+            Image(systemName: "circle.fill").foregroundStyle(.red)
+        case .notUploaded:
+            Image(systemName: "circle.fill").foregroundStyle(.secondary)
+        }
+    }
+
+    private var title: String {
+        switch availability {
+        case let .uploading(current, total): "Загрузка части \(current) из \(total)…"
+        case let .available(until): "Видео загружено в Gemini до \(until.formatted(date: .abbreviated, time: .shortened))"
+        case .expired: "Срок хранения видео истек"
+        case let .failed(message): "Не удалось подготовить видео: \(message)"
+        case .notUploaded: "Видео будет загружено перед первым вопросом"
+        }
+    }
+
+    private var subtitle: String {
+        switch availability {
+        case .available: "Можно задавать вопросы без повторной загрузки. Запросы к модели продолжают расходовать токены."
+        case .expired: "Steno автоматически загрузит запись перед следующим вопросом."
+        case .uploading: "Не закрывайте приложение до завершения загрузки."
+        case .failed: "Повторите отправку сообщения, чтобы попробовать снова."
+        case .notUploaded: "После загрузки файл будет доступен Gemini до 48 часов."
+        }
+    }
+}
+
+private struct ChatMessageBubble: View {
+    var message: ChatMessage
+    var retry: () -> Void
+
+    var body: some View {
+        HStack {
+            if message.role == .user { Spacer(minLength: 80) }
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .top, spacing: 8) {
+                    Text(message.text)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    CopyTextButton(text: message.text)
+                }
+                if message.status == .sending {
+                    ProgressView().controlSize(.small)
+                } else if message.status == .failed {
+                    HStack {
+                        Text(message.error ?? "Ошибка").font(.caption).foregroundStyle(.red)
+                        Button("Retry", action: retry).font(.caption)
+                    }
+                }
+            }
+            .padding(10)
+            .background(message.role == .user ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+            if message.role == .model { Spacer(minLength: 80) }
+        }
+    }
+}
+
+private struct ProtocolMessageBubble: View {
+    var markdown: String
+    var copy: () -> Void
+    var save: (String) -> Bool
+    @State private var isEditing = false
+    @State private var draft = ""
+    @State private var savedMarkdown: String?
+    @FocusState private var isEditorFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Протокол", systemImage: "doc.text.fill")
+                    .font(.headline)
+                Spacer()
+                if isEditing {
+                    Button("Cancel", role: .cancel, action: cancelEditing)
+                        .keyboardShortcut(.cancelAction)
+                    Button(action: saveChanges) {
+                        Label("Save", systemImage: "checkmark")
+                    }
+                    .keyboardShortcut("s", modifiers: .command)
+                    .disabled(draft == displayedMarkdown)
+                } else {
+                    Button(action: copy) {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                    .help("Скопировать протокол")
+                    Button(action: beginEditing) {
+                        Label("Edit", systemImage: "pencil")
+                    }
+                    .help("Редактировать протокол")
+                }
+            }
+            .buttonStyle(.borderless)
+
+            if isEditing {
+                TextEditor(text: $draft)
+                    .font(.system(.body, design: .monospaced))
+                    .focused($isEditorFocused)
+                    .frame(minHeight: 320, idealHeight: 480)
+                    .padding(8)
+                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.secondary.opacity(0.25))
+                    }
+            } else {
+                MarkdownReportView(markdown: displayedMarkdown)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(14)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var displayedMarkdown: String {
+        savedMarkdown ?? markdown
+    }
+
+    private func beginEditing() {
+        draft = displayedMarkdown
+        isEditing = true
+        isEditorFocused = true
+    }
+
+    private func cancelEditing() {
+        draft = displayedMarkdown
+        isEditing = false
+    }
+
+    private func saveChanges() {
+        guard save(draft) else { return }
+        savedMarkdown = draft
+        isEditing = false
+    }
+}
+
+private struct CopyTextButton: View {
+    var text: String
+
+    var body: some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+        } label: {
+            Image(systemName: "doc.on.doc")
+        }
+        .buttonStyle(.borderless)
+        .help("Скопировать сообщение")
     }
 }
 

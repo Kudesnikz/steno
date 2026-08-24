@@ -1,6 +1,30 @@
 import Foundation
 
 public struct SessionStore {
+    public enum FolderError: LocalizedError {
+        case invalidName
+        case duplicateName
+        case missingFolder
+
+        public var errorDescription: String? {
+            switch self {
+            case .invalidName: "Folder name cannot be empty."
+            case .duplicateName: "A folder with this name already exists."
+            case .missingFolder: "The recording folder no longer exists."
+            }
+        }
+    }
+
+    public enum ReportError: LocalizedError {
+        case invalidPath
+
+        public var errorDescription: String? {
+            switch self {
+            case .invalidPath: "The protocol file is outside the recordings directory."
+            }
+        }
+    }
+
     public let fileManager: FileManager
     public var saveDirectory: URL
 
@@ -10,6 +34,7 @@ public struct SessionStore {
     }
 
     public func scanSessions() -> [MeetingSession] {
+        let validFolderIDs = Set(loadFolders().map(\.id))
         guard let items = try? fileManager.contentsOfDirectory(
             at: saveDirectory,
             includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
@@ -51,14 +76,73 @@ public struct SessionStore {
             }
             let modifiedAt = (try? videoURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
             let metadataURL = builder.metadataURL ?? saveDirectory.appending(path: "\(builder.baseName).json")
-            let metadata = loadMetadata(url: metadataURL)
+            var metadata = loadMetadata(url: metadataURL)
+            var didMigrateMetadata = metadata.schemaVersion != 2
+            metadata.schemaVersion = 2
+            if metadata.source == nil {
+                metadata.source = .legacy
+                didMigrateMetadata = true
+            }
+            if let folderID = metadata.folderID, !validFolderIDs.contains(folderID) {
+                metadata.folderID = nil
+                didMigrateMetadata = true
+            }
+            if metadata.reports?.isEmpty != false, !builder.reportURLsByAgentID.isEmpty {
+                metadata.reports = builder.reportURLsByAgentID.map { agentID, url in
+                    ReportInfo(
+                        agentID: agentID,
+                        agentName: agentID,
+                        model: AIModelCatalog.defaultModelID(for: .gemini),
+                        providerID: AIProviderID.gemini.rawValue,
+                        createdAt: ISO8601DateFormatter().string(from: modifiedAt),
+                        processingDurationSeconds: 0,
+                        tokens: ReportTokens(input: 0, output: 0, total: 0),
+                        outputPath: url.lastPathComponent,
+                        status: "success"
+                    )
+                }
+                didMigrateMetadata = true
+            } else if var reports = metadata.reports {
+                for index in reports.indices {
+                    let normalized = AIModelCatalog.normalizedModelID(reports[index].model)
+                    if normalized != reports[index].model {
+                        reports[index].model = normalized
+                        didMigrateMetadata = true
+                    }
+                }
+                metadata.reports = reports
+            }
+            if didMigrateMetadata {
+                try? saveMetadata(metadata, to: metadataURL)
+            }
+            var reportURLsByID: [String: URL] = [:]
+            let latestReportForOutput = Dictionary(grouping: metadata.reports ?? [], by: \.outputPath)
+                .compactMap { outputPath, reports -> ReportInfo? in
+                    guard !outputPath.isEmpty else { return nil }
+                    return reports.max { $0.createdAt < $1.createdAt }
+                }
+            for report in latestReportForOutput {
+                let reportURL = saveDirectory.appending(path: report.outputPath)
+                guard fileManager.fileExists(atPath: reportURL.path) else {
+                    continue
+                }
+                reportURLsByID[report.id] = reportURL
+            }
+            let mappedURLs = Set(reportURLsByID.values)
+            var latestURLsByAgentID = builder.reportURLsByAgentID.filter { !mappedURLs.contains($0.value) }
+            for report in (metadata.reports ?? []).sorted(by: { $0.createdAt < $1.createdAt }) {
+                if let reportURL = reportURLsByID[report.id] {
+                    latestURLsByAgentID[report.agentID] = reportURL
+                }
+            }
             return MeetingSession(
                 baseName: builder.baseName,
                 baseURL: saveDirectory.appending(path: builder.baseName),
                 videoURL: videoURL,
                 metadataURL: metadataURL,
                 audioURLs: builder.audioURLs.sorted { $0.lastPathComponent < $1.lastPathComponent },
-                reportURLsByAgentID: builder.reportURLsByAgentID,
+                reportURLsByAgentID: latestURLsByAgentID,
+                reportURLsByReportID: reportURLsByID,
                 metadata: metadata,
                 modifiedAt: modifiedAt
             )
@@ -76,6 +160,17 @@ public struct SessionStore {
         AppLog.info("Renamed session \(session.baseName)", category: .sessions)
     }
 
+    public func move(session: MeetingSession, toFolderID folderID: String?) throws {
+        if let folderID, !loadFolders().contains(where: { $0.id == folderID }) {
+            throw FolderError.missingFolder
+        }
+        var metadata = session.metadata
+        metadata.schemaVersion = 2
+        metadata.folderID = folderID
+        try saveMetadata(metadata, to: session.metadataURL)
+        AppLog.info("Moved session \(session.baseName) to folder=\(folderID ?? "root")", category: .sessions)
+    }
+
     public func delete(session: MeetingSession) throws {
         try deleteArtifacts(baseName: session.baseName)
     }
@@ -86,7 +181,7 @@ public struct SessionStore {
             return
         }
         for item in items where item.lastPathComponent.hasPrefix(baseName) {
-            try? fileManager.removeItem(at: item)
+            try fileManager.removeItem(at: item)
         }
         AppLog.info("Deleted artifacts for \(baseName)", category: .sessions)
     }
@@ -95,6 +190,21 @@ public struct SessionStore {
         let url = saveDirectory.appending(path: "\(baseName).json")
         try saveMetadata(SessionMetadata(name: displayName, createdAt: createdAt), to: url)
         AppLog.info("Created initial metadata for \(baseName)", category: .sessions)
+    }
+
+    public func createInitialMetadata(
+        baseName: String,
+        displayName: String,
+        createdAt: String,
+        folderID: String?,
+        source: RecordingSource
+    ) throws {
+        let url = saveDirectory.appending(path: "\(baseName).json")
+        try saveMetadata(
+            SessionMetadata(name: displayName, createdAt: createdAt, folderID: folderID, source: source),
+            to: url
+        )
+        AppLog.info("Created initial metadata for \(baseName), source=\(source.rawValue)", category: .sessions)
     }
 
     public func updateRecordingMetadata(baseName: String, duration: Int, quality: String, videoURL: URL) throws {
@@ -127,7 +237,9 @@ public struct SessionStore {
         let metadataURL = saveDirectory.appending(path: "\(baseName).json")
         var metadata = loadMetadata(url: metadataURL)
         var reports = metadata.reports ?? []
-        if let index = reports.firstIndex(where: { $0.agentID == report.agentID && $0.createdAt == report.createdAt }) {
+        if let index = reports.firstIndex(where: {
+            $0.id == report.id || ($0.agentID == report.agentID && $0.createdAt == report.createdAt)
+        }) {
             reports[index] = report
         } else {
             reports.append(report)
@@ -141,11 +253,97 @@ public struct SessionStore {
         try String(contentsOf: url, encoding: .utf8)
     }
 
+    public func overwriteReportText(_ text: String, url: URL) throws {
+        let directory = saveDirectory.standardizedFileURL.resolvingSymlinksInPath()
+        let reportURL = url.standardizedFileURL.resolvingSymlinksInPath()
+        guard reportURL.deletingLastPathComponent() == directory,
+              reportURL.pathExtension.lowercased() == "txt" else {
+            throw ReportError.invalidPath
+        }
+        try text.write(to: reportURL, atomically: true, encoding: .utf8)
+        AppLog.info("Updated report text at \(reportURL.lastPathComponent)", category: .sessions)
+    }
+
     public func saveReportText(_ text: String, baseName: String, agentID: String) throws -> URL {
         let url = saveDirectory.appending(path: "\(baseName)_protocol_\(agentID).txt")
         try text.write(to: url, atomically: true, encoding: .utf8)
         AppLog.info("Saved report text for \(baseName), agent=\(agentID)", category: .sessions)
         return url
+    }
+
+    public func saveReportText(_ text: String, baseName: String, agentID: String, reportID: String) throws -> URL {
+        let safeAgentID = safeFileComponent(agentID)
+        let safeReportID = safeFileComponent(reportID)
+        let url = saveDirectory.appending(path: "\(baseName)_protocol_\(safeAgentID)_\(safeReportID).txt")
+        try text.write(to: url, atomically: true, encoding: .utf8)
+        AppLog.info("Saved versioned report for \(baseName), agent=\(agentID)", category: .sessions)
+        return url
+    }
+
+    public func updateRemoteMedia(baseName: String, manifest: RemoteMediaManifest?) throws {
+        let metadataURL = saveDirectory.appending(path: "\(baseName).json")
+        var metadata = loadMetadata(url: metadataURL)
+        metadata.schemaVersion = 2
+        metadata.remoteMedia = manifest
+        try saveMetadata(metadata, to: metadataURL)
+    }
+
+    public func loadChat(baseName: String, reportID: String, modelAlias: String) -> ChatThread {
+        let url = chatURL(baseName: baseName, reportID: reportID)
+        guard let data = try? Data(contentsOf: url),
+              let thread = try? JSONDecoder().decode(ChatThread.self, from: data) else {
+            return ChatThread(reportID: reportID, modelAlias: modelAlias)
+        }
+        return thread
+    }
+
+    public func saveChat(_ thread: ChatThread, baseName: String) throws {
+        let url = chatURL(baseName: baseName, reportID: thread.reportID)
+        try writeJSON(thread, to: url)
+    }
+
+    public func chatURL(baseName: String, reportID: String) -> URL {
+        saveDirectory.appending(path: "\(baseName)_chat_\(safeFileComponent(reportID)).json")
+    }
+
+    public func loadFolders() -> [RecordingFolder] {
+        let url = foldersURL
+        guard let data = try? Data(contentsOf: url),
+              let folders = try? JSONDecoder().decode([RecordingFolder].self, from: data) else {
+            return []
+        }
+        return folders.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    @discardableResult
+    public func createFolder(name: String) throws -> RecordingFolder {
+        let normalizedName = try validatedFolderName(name, excludingID: nil)
+        var folders = loadFolders()
+        let folder = RecordingFolder(name: normalizedName)
+        folders.append(folder)
+        try saveFolders(folders)
+        return folder
+    }
+
+    public func renameFolder(id: String, to name: String) throws {
+        let normalizedName = try validatedFolderName(name, excludingID: id)
+        var folders = loadFolders()
+        guard let index = folders.firstIndex(where: { $0.id == id }) else {
+            throw FolderError.missingFolder
+        }
+        folders[index].name = normalizedName
+        try saveFolders(folders)
+    }
+
+    public func deleteFolder(id: String, moveSessionsToRoot: Bool) throws {
+        if moveSessionsToRoot {
+            for session in scanSessions() where session.metadata.folderID == id {
+                try move(session: session, toFolderID: nil)
+            }
+        }
+        var folders = loadFolders()
+        folders.removeAll { $0.id == id }
+        try saveFolders(folders)
     }
 
     private func loadMetadata(url: URL) -> SessionMetadata {
@@ -163,6 +361,41 @@ public struct SessionStore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         let data = try encoder.encode(metadata)
         try data.write(to: url, options: .atomic)
+    }
+
+    private var foldersURL: URL {
+        saveDirectory.appending(path: ".steno-folders.json")
+    }
+
+    private func saveFolders(_ folders: [RecordingFolder]) throws {
+        try writeJSON(folders.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }, to: foldersURL)
+    }
+
+    private func validatedFolderName(_ name: String, excludingID: String?) throws -> String {
+        let normalized = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
+        guard !normalized.isEmpty else {
+            throw FolderError.invalidName
+        }
+        if loadFolders().contains(where: {
+            $0.id != excludingID && $0.name.localizedCaseInsensitiveCompare(normalized) == .orderedSame
+        }) {
+            throw FolderError.duplicateName
+        }
+        return normalized
+    }
+
+    private func writeJSON<T: Encodable>(_ value: T, to url: URL) throws {
+        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(value)
+        try data.write(to: url, options: .atomic)
+    }
+
+    private func safeFileComponent(_ value: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        let scalars = value.unicodeScalars.map { allowed.contains($0) ? Character(String($0)) : "_" }
+        return String(scalars).isEmpty ? "item" : String(scalars)
     }
 
 }

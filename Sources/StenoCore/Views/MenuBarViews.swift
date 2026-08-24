@@ -9,19 +9,25 @@ public struct StatusBarSnapshot: Equatable, Sendable {
     public var isProcessing: Bool
     public var showRecordingTime: Bool
     public var recordingDuration: Int
+    public var microphoneEnabled: Bool
+    public var systemAudioEnabled: Bool
 
     public init(
         isRecording: Bool,
         isFinalizingRecording: Bool,
         isProcessing: Bool,
         showRecordingTime: Bool,
-        recordingDuration: Int
+        recordingDuration: Int,
+        microphoneEnabled: Bool,
+        systemAudioEnabled: Bool
     ) {
         self.isRecording = isRecording
         self.isFinalizingRecording = isFinalizingRecording
         self.isProcessing = isProcessing
         self.showRecordingTime = showRecordingTime
         self.recordingDuration = recordingDuration
+        self.microphoneEnabled = microphoneEnabled
+        self.systemAudioEnabled = systemAudioEnabled
     }
 
     @MainActor
@@ -31,7 +37,9 @@ public struct StatusBarSnapshot: Equatable, Sendable {
             isFinalizingRecording: viewModel.isFinalizingRecording,
             isProcessing: viewModel.isProcessing,
             showRecordingTime: viewModel.config.showRecordingTime,
-            recordingDuration: viewModel.recordingDuration
+            recordingDuration: viewModel.recordingDuration,
+            microphoneEnabled: viewModel.config.microphoneEnabled,
+            systemAudioEnabled: viewModel.config.systemAudioEnabled
         )
     }
 }
@@ -55,14 +63,16 @@ public final class StatusBarController: NSObject {
         isFinalizingRecording: false,
         isProcessing: false,
         showRecordingTime: true,
-        recordingDuration: 0
+        recordingDuration: 0,
+        microphoneEnabled: true,
+        systemAudioEnabled: true
     )
 
     public override init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
         statusItem.menu = menu
-        menu.showsStateColumn = false
+        menu.showsStateColumn = true
         configureButton()
         rebuildMenu()
         update(snapshot)
@@ -137,6 +147,18 @@ public final class StatusBarController: NSObject {
             recordingTitle = snapshot.isRecording ? "Stop Recording" : "Start Recording"
         }
         menu.addItem(item(title: recordingTitle, action: #selector(toggleRecording)))
+        menu.addItem(toggleItem(
+            title: "System Audio",
+            systemImage: snapshot.systemAudioEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill",
+            isOn: snapshot.systemAudioEnabled,
+            action: #selector(toggleSystemAudio)
+        ))
+        menu.addItem(toggleItem(
+            title: "Microphone",
+            systemImage: snapshot.microphoneEnabled ? "mic.fill" : "mic.slash.fill",
+            isOn: snapshot.microphoneEnabled,
+            action: #selector(toggleMicrophone)
+        ))
 
         if snapshot.isProcessing {
             menu.addItem(item(title: "Cancel AI Processing", action: #selector(cancelProcessing)))
@@ -156,6 +178,16 @@ public final class StatusBarController: NSObject {
     private func item(title: String, action: Selector) -> NSMenuItem {
         let item = IconlessMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self
+        return item
+    }
+
+    private func toggleItem(title: String, systemImage: String, isOn: Bool, action: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        item.state = isOn ? .on : .off
+        item.image = NSImage(systemSymbolName: systemImage, accessibilityDescription: title)
+        item.image?.isTemplate = true
+        item.isEnabled = !snapshot.isFinalizingRecording
         return item
     }
 
@@ -197,6 +229,14 @@ public final class StatusBarController: NSObject {
 
     @objc private func cancelProcessing() {
         viewModel?.cancelGeneration()
+    }
+
+    @objc private func toggleMicrophone() {
+        viewModel?.toggleMicrophoneCapture()
+    }
+
+    @objc private func toggleSystemAudio() {
+        viewModel?.toggleSystemAudioCapture()
     }
 
     @objc private func showUI() {

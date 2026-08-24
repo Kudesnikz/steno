@@ -98,6 +98,8 @@ public actor AIProcessingClient {
         audioURLs: [URL],
         config: AppConfig,
         agent: Agent,
+        existingRemoteMedia: RemoteMediaManifest? = nil,
+        remoteMediaUpdate: RemoteMediaUpdateHandler? = nil,
         progress: AIProgressHandler? = nil
     ) async throws -> AIProcessingResult {
         let model = try selectedAllowedModel(config: config)
@@ -119,6 +121,8 @@ public actor AIProcessingClient {
                 audioURLs: audioURLs,
                 config: config,
                 agent: agent,
+                existingRemoteMedia: existingRemoteMedia,
+                remoteMediaUpdate: remoteMediaUpdate,
                 progress: progress
             )
         case .kimi, .qwen, .openRouter:
@@ -140,8 +144,38 @@ public actor AIProcessingClient {
         }
     }
 
+    public func sendChatMessage(
+        request: GeminiChatRequest,
+        remoteMediaUpdate: RemoteMediaUpdateHandler? = nil,
+        progress: AIProgressHandler? = nil
+    ) async throws -> GeminiChatResult {
+        guard request.config.aiProvider == .gemini else {
+            throw AIClientError.unsupportedModel(
+                providerID: request.config.aiProvider,
+                modelID: request.config.modelName
+            )
+        }
+        try requireCredentials(config: request.config, providerID: .gemini)
+        return try await geminiClient.sendChatMessage(
+            request: request,
+            remoteMediaUpdate: remoteMediaUpdate,
+            progress: progress
+        )
+    }
+
+    public func deleteRemoteMedia(_ manifest: RemoteMediaManifest, config: AppConfig) async -> Bool {
+        await geminiClient.deleteRemoteMedia(manifest, config: config)
+    }
+
+    public func usageSnapshot(apiKey: String) async -> GeminiUsageSnapshot {
+        await geminiClient.usageSnapshot(apiKey: apiKey)
+    }
+
     private func selectedAllowedModel(config: AppConfig) throws -> AIModelReference {
         let providerID = config.aiProvider
+        guard ProviderAvailability.isActive(providerID) else {
+            throw AIClientError.unsupportedModel(providerID: providerID, modelID: config.modelName)
+        }
         let modelID = AIModelCatalog.normalizedModelID(config.modelName)
         guard let model = AIModelCatalog.model(providerID: providerID, modelID: modelID),
               AIModelCatalog.hasVideoInput(model.inputModalities) else {

@@ -38,10 +38,10 @@ final class AIModelCatalogTests: XCTestCase {
         XCTAssertTrue(models.allSatisfy(\.isDynamicallyVerified))
     }
 
-    func testGeminiFlashLightAliasNormalizesToOfficialLiteSlug() {
+    func testLegacyGeminiFlashLightNormalizesToLatestLiteAlias() {
         XCTAssertEqual(
             AIModelCatalog.normalizedModelID("gemini-3.1-flash-light-preview"),
-            "gemini-3.1-flash-lite-preview"
+            "gemini-flash-lite-latest"
         )
     }
 
@@ -59,6 +59,28 @@ final class AIModelCatalogTests: XCTestCase {
         let config = try JSONDecoder().decode(AppConfig.self, from: XCTUnwrap(payload.data(using: .utf8)))
 
         XCTAssertEqual(config.aiProvider, .gemini)
-        XCTAssertEqual(config.modelName, "gemini-3.1-flash-lite-preview")
+        XCTAssertEqual(config.modelName, "gemini-flash-lite-latest")
+    }
+
+    func testProductionCatalogContainsOnlyGeminiLatestAliases() {
+        XCTAssertEqual(Set(ProviderAvailability.activeProviderIDs), [.gemini])
+        XCTAssertEqual(
+            Set(AIModelCatalog.fallbackModels.map(\.modelID)),
+            ["gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"]
+        )
+        XCTAssertEqual(AIModelCatalog.defaultModelID(for: .gemini), "gemini-flash-lite-latest")
+    }
+
+    func testDormantProviderModelIDIsNotRewritten() {
+        XCTAssertEqual(
+            AIModelCatalog.normalizedModelID("google/gemini-3.1-pro-preview"),
+            "google/gemini-3.1-pro-preview"
+        )
+    }
+
+    func testAllLegacyGeminiFamiliesMigrateToLatestAliases() {
+        XCTAssertEqual(AIModelCatalog.normalizedModelID("gemini-2.5-pro"), "gemini-pro-latest")
+        XCTAssertEqual(AIModelCatalog.normalizedModelID("gemini-2.5-flash"), "gemini-flash-latest")
+        XCTAssertEqual(AIModelCatalog.normalizedModelID("gemini-2.5-flash-lite"), "gemini-flash-lite-latest")
     }
 }

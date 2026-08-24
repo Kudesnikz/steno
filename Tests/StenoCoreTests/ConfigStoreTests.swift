@@ -35,6 +35,7 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertFalse(result.didFindExistingConfig)
         XCTAssertEqual(result.config.modelName, AppConfig.default.modelName)
         XCTAssertEqual(result.config.agents.count, AppConfig.defaultAgents.count)
+        XCTAssertFalse(result.config.splitLargeMediaEnabled)
     }
 
     func testVideoQualityEstimateUsesConfiguredBitrate() {

@@ -26,6 +26,17 @@ public enum AIProviderID: String, Codable, CaseIterable, Identifiable, Sendable 
     }
 }
 
+/// Providers that are compiled into Steno and providers exposed by the production UI
+/// are intentionally separate. Dormant clients stay buildable and can be enabled again
+/// without resurrecting commented-out code.
+public enum ProviderAvailability {
+    public static let activeProviderIDs: Set<AIProviderID> = [.gemini]
+
+    public static func isActive(_ providerID: AIProviderID) -> Bool {
+        activeProviderIDs.contains(providerID)
+    }
+}
+
 /// Cost bucket shown in Settings so expensive and economical models remain explicit.
 public enum AIModelTier: String, Codable, Sendable {
     case premium
@@ -103,22 +114,22 @@ public enum AIModelCatalog {
     public static let allowedModels: [AIModelReference] = [
         AIModelReference(
             providerID: .gemini,
-            modelID: "gemini-3.1-pro-preview",
-            displayName: "Gemini 3.1 Pro Preview",
+            modelID: "gemini-pro-latest",
+            displayName: "Gemini Pro Latest",
             tier: .premium,
             inputModalities: ["text", "image", "audio", "video", "file"]
         ),
         AIModelReference(
             providerID: .gemini,
-            modelID: "gemini-3.1-flash-lite-preview",
-            displayName: "Gemini 3.1 Flash Lite Preview",
+            modelID: "gemini-flash-latest",
+            displayName: "Gemini Flash Latest",
             tier: .economical,
             inputModalities: ["text", "image", "audio", "video", "file"]
         ),
         AIModelReference(
             providerID: .gemini,
-            modelID: "gemini-3-flash-preview",
-            displayName: "Gemini 3 Flash Preview",
+            modelID: "gemini-flash-lite-latest",
+            displayName: "Gemini Flash Lite Latest",
             tier: .economical,
             inputModalities: ["text", "image", "audio", "video", "file"]
         ),
@@ -209,7 +220,7 @@ public enum AIModelCatalog {
     ]
 
     public static var fallbackModels: [AIModelReference] {
-        allowedModels.filter { $0.providerID != .openRouter }
+        allowedModels.filter { ProviderAvailability.isActive($0.providerID) }
     }
 
     public static func providerModels(_ providerID: AIProviderID) -> [AIModelReference] {
@@ -219,7 +230,10 @@ public enum AIModelCatalog {
     }
 
     public static func defaultModelID(for providerID: AIProviderID) -> String {
-        providerModels(providerID).first?.modelID ?? "gemini-3-flash-preview"
+        if providerID == .gemini {
+            return "gemini-flash-lite-latest"
+        }
+        return providerModels(providerID).first?.modelID ?? "gemini-flash-lite-latest"
     }
 
     public static func model(providerID: AIProviderID, modelID: String) -> AIModelReference? {
@@ -228,12 +242,23 @@ public enum AIModelCatalog {
     }
 
     public static func normalizedModelID(_ modelID: String) -> String {
-        switch modelID {
-        case "gemini-3.1-flash-light-preview":
-            "gemini-3.1-flash-lite-preview"
-        default:
-            modelID
+        let normalized = modelID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.contains("/") else {
+            return modelID
         }
+        guard normalized.contains("gemini") else {
+            return modelID
+        }
+        if normalized == "gemini-pro-latest" || normalized.contains("pro") {
+            return "gemini-pro-latest"
+        }
+        if normalized == "gemini-flash-lite-latest" || normalized.contains("flash-lite") || normalized.contains("flash-light") {
+            return "gemini-flash-lite-latest"
+        }
+        if normalized == "gemini-flash-latest" || normalized.contains("flash") {
+            return "gemini-flash-latest"
+        }
+        return modelID
     }
 
     public static func filterAllowedRemoteModels(

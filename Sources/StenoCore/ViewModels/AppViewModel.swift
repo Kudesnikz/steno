@@ -77,7 +77,9 @@ public struct AIConnectionCheckStatus: Equatable, Sendable {
 public final class AppViewModel {
     public var config: AppConfig
     public var sessions: [MeetingSession] = []
+    public var folders: [RecordingFolder] = []
     public var selectedSessionID: MeetingSession.ID?
+    public var selectedReportID: String?
     public var selectedTabID: String = "player"
     public var isRecording = false
     public var isFinalizingRecording = false
@@ -94,6 +96,11 @@ public final class AppViewModel {
     public var showSettings = false
     public var permissionState = PermissionState(hasScreenCapture: false, hasMicrophone: false)
     public var microphoneInputVolumeState = SystemInputVolumeState()
+    public var chatThread: ChatThread?
+    public var isSendingChatMessage = false
+    public var remoteMediaAvailability: RemoteMediaAvailability = .notUploaded
+    public var geminiUsageSnapshot: GeminiUsageSnapshot?
+    public var isImportingRecording = false
 
     @ObservationIgnored private let configStore: ConfigStore
     @ObservationIgnored private var sessionStore = SessionStore(saveDirectory: URL(fileURLWithPath: AppConfig.default.saveDirectory))
@@ -102,9 +109,12 @@ public final class AppViewModel {
     @ObservationIgnored private let aiClient: AIProcessingClient
     @ObservationIgnored private let modelCatalogService: AIModelCatalogService
     @ObservationIgnored private let inputVolumeService: SystemInputVolumeService
+    @ObservationIgnored private let importService: RecordingImportService
+    @ObservationIgnored private let remoteCleanupStore: RemoteCleanupStore
     @ObservationIgnored private var recorder: ScreenRecordingService?
     @ObservationIgnored private var recordingTimerTask: Task<Void, Never>?
     @ObservationIgnored private var aiTask: Task<Void, Never>?
+    @ObservationIgnored private var chatTask: Task<Void, Never>?
     @ObservationIgnored private var currentRecordingBaseName: String?
     @ObservationIgnored private var currentRecordingURL: URL?
 
@@ -114,7 +124,9 @@ public final class AppViewModel {
         captureDisplayService: CaptureDisplayService = CaptureDisplayService(),
         aiClient: AIProcessingClient = AIProcessingClient(),
         modelCatalogService: AIModelCatalogService = AIModelCatalogService(),
-        inputVolumeService: SystemInputVolumeService = SystemInputVolumeService()
+        inputVolumeService: SystemInputVolumeService = SystemInputVolumeService(),
+        importService: RecordingImportService = RecordingImportService(),
+        remoteCleanupStore: RemoteCleanupStore = RemoteCleanupStore()
     ) {
         self.configStore = configStore
         self.permissionsService = permissionsService
@@ -122,6 +134,8 @@ public final class AppViewModel {
         self.aiClient = aiClient
         self.modelCatalogService = modelCatalogService
         self.inputVolumeService = inputVolumeService
+        self.importService = importService
+        self.remoteCleanupStore = remoteCleanupStore
 
         var loadedConfig = AppConfig.default
         var didFindExistingConfig = false
@@ -139,6 +153,17 @@ public final class AppViewModel {
             loadedConfig = .default
             didFindExistingConfig = false
             initialError = "Config load failed: \(error.localizedDescription)"
+        }
+
+        let normalizedModel = AIModelCatalog.normalizedModelID(loadedConfig.modelName)
+        if !ProviderAvailability.isActive(loadedConfig.aiProvider) ||
+            AIModelCatalog.model(providerID: .gemini, modelID: normalizedModel) == nil {
+            loadedConfig.aiProvider = .gemini
+            loadedConfig.modelName = AIModelCatalog.defaultModelID(for: .gemini)
+            try? configStore.save(loadedConfig)
+        } else if normalizedModel != loadedConfig.modelName {
+            loadedConfig.modelName = normalizedModel
+            try? configStore.save(loadedConfig)
         }
 
         let initialPermissionState = permissionsService.currentState()
@@ -159,6 +184,10 @@ public final class AppViewModel {
         Task {
             await refreshAIModels()
         }
+        Task {
+            await refreshGeminiUsage()
+            await processRemoteCleanupQueue()
+        }
         inputVolumeService.startMonitoring { [weak self] state in
             self?.microphoneInputVolumeState = state
         }
@@ -168,11 +197,24 @@ public final class AppViewModel {
     deinit {
         recordingTimerTask?.cancel()
         aiTask?.cancel()
+        chatTask?.cancel()
         inputVolumeService.stopMonitoring()
     }
 
     public var selectedSession: MeetingSession? {
         sessions.first { $0.id == selectedSessionID }
+    }
+
+    public var selectedReport: ReportInfo? {
+        guard let selectedReportID else { return nil }
+        return selectedSession?.metadata.reports?.first { $0.id == selectedReportID }
+    }
+
+    public var recordingAudioState: RecordingAudioState {
+        RecordingAudioState(
+            microphoneEnabled: config.microphoneEnabled,
+            systemAudioEnabled: config.systemAudioEnabled
+        )
     }
 
     public var activeAgent: Agent? {
@@ -184,7 +226,11 @@ public final class AppViewModel {
     }
 
     public var canGenerate: Bool {
-        selectedSession != nil && !isProcessing && !isRecording && !isFinalizingRecording
+        selectedSession != nil && !isProcessing && !isSendingChatMessage && !isRecording && !isFinalizingRecording
+    }
+
+    public var geminiRetryBlockedUntil: Date? {
+        geminiUsageSnapshot?.blockedUntil.flatMap { $0 > Date() ? $0 : nil }
     }
 
     public var recordingCommandTitle: String {
@@ -277,6 +323,18 @@ public final class AppViewModel {
         }
     }
 
+    public func toggleMicrophoneCapture() {
+        config.microphoneEnabled.toggle()
+        recorder?.setMicrophoneEnabled(config.microphoneEnabled)
+        persistAudioCaptureState()
+    }
+
+    public func toggleSystemAudioCapture() {
+        config.systemAudioEnabled.toggle()
+        recorder?.setSystemAudioEnabled(config.systemAudioEnabled)
+        persistAudioCaptureState()
+    }
+
     public func saveConfig() {
         normalizeConfig()
         do {
@@ -310,7 +368,7 @@ public final class AppViewModel {
     }
 
     public func selectAIProvider(_ providerID: String) {
-        guard let provider = AIProviderID(rawValue: providerID) else {
+        guard let provider = AIProviderID(rawValue: providerID), ProviderAvailability.isActive(provider) else {
             config.aiProvider = .gemini
             config.modelName = AIModelCatalog.defaultModelID(for: .gemini)
             return
@@ -330,19 +388,12 @@ public final class AppViewModel {
             return
         }
         isRefreshingAIModels = true
-        let snapshot = config
-        AppLog.info("Refreshing AI model catalog provider=\(snapshot.aiProvider.displayName)", category: .ai)
-        let result = await modelCatalogService.refreshAvailableModels(config: snapshot)
-        availableAIModels = result.models.isEmpty ? AIModelCatalog.fallbackModels : result.models
+        AppLog.info("Refreshing active Gemini alias catalog", category: .ai)
+        availableAIModels = AIModelCatalog.providerModels(.gemini)
         if !availableAIModels.contains(where: { $0.providerID == config.aiProvider && $0.modelID == config.modelName }) {
             config.modelName = modelsForSelectedProvider.first?.modelID ?? AIModelCatalog.defaultModelID(for: config.aiProvider)
         }
-        if result.warnings.isEmpty {
-            statusMessage = "AI models refreshed"
-        } else {
-            statusMessage = "AI models refreshed with warnings"
-            AppLog.warning("AI model refresh warnings: \(result.warnings.joined(separator: " | "))", category: .ai)
-        }
+        statusMessage = "Gemini model aliases refreshed"
         isRefreshingAIModels = false
     }
 
@@ -356,16 +407,116 @@ public final class AppViewModel {
 
     public func refreshSessions() {
         sessions = sessionStore.scanSessions()
+        folders = sessionStore.loadFolders()
         if selectedSessionID == nil || !sessions.contains(where: { $0.id == selectedSessionID }) {
             selectedSessionID = sessions.first?.id
         }
+        synchronizeSelectedReport()
+        updateRemoteMediaAvailability()
         AppLog.debug("Refreshed sessions count=\(sessions.count)", category: .sessions)
     }
 
     public func select(_ session: MeetingSession) {
         selectedSessionID = session.id
-        selectedTabID = session.sortedReportAgentIDs.first.map { "report:\($0)" } ?? "player"
+        selectedReportID = session.availableReports.first?.id
+        selectedTabID = selectedReportID == nil ? "player" : "reports"
+        synchronizeSelectedReport()
+        updateRemoteMediaAvailability()
         AppLog.info("Selected session \(session.baseName)", category: .ui)
+    }
+
+    public func selectReport(id: String) {
+        guard selectedSession?.metadata.reports?.contains(where: { $0.id == id }) == true else { return }
+        selectedReportID = id
+        synchronizeSelectedReport()
+    }
+
+    public func createFolder(name: String) {
+        do {
+            _ = try sessionStore.createFolder(name: name)
+            refreshSessions()
+        } catch {
+            errorMessage = "Folder creation failed: \(error.localizedDescription)"
+        }
+    }
+
+    public func renameFolder(id: String, to name: String) {
+        do {
+            try sessionStore.renameFolder(id: id, to: name)
+            refreshSessions()
+        } catch {
+            errorMessage = "Folder rename failed: \(error.localizedDescription)"
+        }
+    }
+
+    public func moveSession(id: String, toFolderID folderID: String?) {
+        guard let session = sessions.first(where: { $0.id == id }) else { return }
+        do {
+            try sessionStore.move(session: session, toFolderID: folderID)
+            refreshSessions()
+            selectedSessionID = id
+        } catch {
+            errorMessage = "Move failed: \(error.localizedDescription)"
+        }
+    }
+
+    public func deleteFolder(id: String, deleteRecordings: Bool) {
+        let affected = sessions.filter { $0.metadata.folderID == id }
+        if !deleteRecordings {
+            do {
+                try sessionStore.deleteFolder(id: id, moveSessionsToRoot: true)
+                refreshSessions()
+            } catch {
+                errorMessage = "Folder deletion failed: \(error.localizedDescription)"
+            }
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            for session in affected {
+                await self.deleteSession(session)
+            }
+            do {
+                try self.sessionStore.deleteFolder(id: id, moveSessionsToRoot: false)
+                self.refreshSessions()
+            } catch {
+                self.errorMessage = "Folder deletion failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    public func importRecording(from sourceURL: URL, folderID: String?) async {
+        guard !isRecording, !isFinalizingRecording, !isProcessing, !isImportingRecording else { return }
+        isImportingRecording = true
+        statusMessage = "Importing \(sourceURL.lastPathComponent)"
+        defer { isImportingRecording = false }
+        do {
+            let imported = try await importService.importVideo(
+                from: sourceURL,
+                saveDirectory: URL(fileURLWithPath: config.saveDirectory)
+            )
+            let createdAt = ISO8601DateFormatter().string(from: Date())
+            try sessionStore.createInitialMetadata(
+                baseName: imported.baseName,
+                displayName: imported.displayName,
+                createdAt: createdAt,
+                folderID: folderID,
+                source: .imported
+            )
+            try sessionStore.updateRecordingMetadata(
+                baseName: imported.baseName,
+                duration: imported.durationSeconds,
+                quality: "Imported",
+                videoURL: imported.videoURL
+            )
+            refreshSessions()
+            selectedSessionID = imported.baseName
+            selectedTabID = "player"
+            statusMessage = "Recording imported"
+        } catch {
+            errorMessage = "Import failed: \(error.localizedDescription)"
+            AppLog.error("Import failed: \(error.localizedDescription)", category: .sessions)
+        }
     }
 
     public func renameSelectedSession(to name: String) {
@@ -385,9 +536,19 @@ public final class AppViewModel {
         guard let session = selectedSession else {
             return
         }
+        Task { [weak self] in
+            await self?.deleteSession(session)
+        }
+    }
+
+    private func deleteSession(_ session: MeetingSession) async {
         do {
+            if let manifest = session.metadata.remoteMedia {
+                try await remoteCleanupStore.enqueue(manifest)
+            }
             try sessionStore.delete(session: session)
             refreshSessions()
+            await processRemoteCleanupQueue()
         } catch {
             errorMessage = "Delete failed: \(error.localizedDescription)"
             AppLog.error("Delete failed: \(error.localizedDescription)", category: .sessions)
@@ -418,11 +579,10 @@ public final class AppViewModel {
         }
         await refreshCaptureDisplays()
 
-        let formatter = DateFormatter()
-        formatter.dateFormat = "dd.MM.yyyy_HH:mm:ss"
-        let timestamp = formatter.string(from: Date())
-        let baseName = "Meet_\(timestamp)"
         let saveURL = URL(fileURLWithPath: config.saveDirectory)
+        let identity = uniqueRecordingIdentity(in: saveURL)
+        let timestamp = identity.timestamp
+        let baseName = identity.baseName
         let outputURL = saveURL.appending(path: "\(baseName).mp4")
 
         do {
@@ -441,13 +601,20 @@ public final class AppViewModel {
             try await recorder.start(
                 outputURL: outputURL,
                 preset: config.preset(),
-                selectedDisplayID: config.videoDeviceIndex
+                selectedDisplayID: config.videoDeviceIndex,
+                audioState: recordingAudioState
             ) { [weak self] event in
                 Task { @MainActor in
                     self?.handleRecorderEvent(event)
                 }
             }
-            try sessionStore.createInitialMetadata(baseName: baseName, displayName: timestamp.replacingOccurrences(of: "_", with: " "), createdAt: timestamp)
+            try sessionStore.createInitialMetadata(
+                baseName: baseName,
+                displayName: timestamp.replacingOccurrences(of: "_", with: " "),
+                createdAt: timestamp,
+                folderID: nil,
+                source: .captured
+            )
             isRecording = true
             statusMessage = "Recording started"
             startRecordingTimer()
@@ -554,6 +721,8 @@ public final class AppViewModel {
                     checkedAt: finishedAt,
                     durationSeconds: finishedAt.timeIntervalSince(startedAt)
                 )
+                await self.refreshGeminiUsage()
+                await self.processRemoteCleanupQueue()
                 AppLog.info("AI connection check completed baseURL=\(result.baseURL) model=\(result.modelName)", category: .ai)
             } catch {
                 let safeMessage = self.masked(error.localizedDescription, config: snapshotConfig)
@@ -580,6 +749,10 @@ public final class AppViewModel {
         guard let session = selectedSession, let agent = activeAgent, !isProcessing else {
             return
         }
+        if let blockedUntil = geminiRetryBlockedUntil {
+            errorMessage = "Gemini quota is temporarily exhausted. Retry after \(blockedUntil.formatted(date: .omitted, time: .standard))."
+            return
+        }
 
         isProcessing = true
         errorMessage = nil
@@ -587,12 +760,16 @@ public final class AppViewModel {
         AppLog.info("AI processing requested session=\(session.baseName) agent=\(agent.id)", category: .ai)
 
         let snapshotConfig = config
+        let reportID = UUID().uuidString
         let processingStartedAt = ISO8601DateFormatter().string(from: Date())
         let processingStartDate = Date()
         let initialReport = ReportInfo(
+            id: reportID,
             agentID: agent.id,
             agentName: agent.name,
             model: snapshotConfig.modelName,
+            providerID: AIProviderID.gemini.rawValue,
+            promptSnapshot: agent.prompt,
             createdAt: processingStartedAt,
             processingDurationSeconds: 0,
             tokens: ReportTokens(input: 0, output: 0, total: 0),
@@ -609,9 +786,12 @@ public final class AppViewModel {
                 }
                 self.statusMessage = phase.statusMessage
                 let report = ReportInfo(
+                    id: reportID,
                     agentID: agent.id,
                     agentName: agent.name,
                     model: snapshotConfig.modelName,
+                    providerID: AIProviderID.gemini.rawValue,
+                    promptSnapshot: agent.prompt,
                     createdAt: processingStartedAt,
                     processingDurationSeconds: Int(Date().timeIntervalSince(processingStartDate)),
                     tokens: ReportTokens(input: 0, output: 0, total: 0),
@@ -634,18 +814,32 @@ public final class AppViewModel {
                     audioURLs: session.audioURLs,
                     config: snapshotConfig,
                     agent: agent,
+                    existingRemoteMedia: session.metadata.remoteMedia,
+                    remoteMediaUpdate: { manifest in
+                        let store = SessionStore(saveDirectory: session.baseURL.deletingLastPathComponent())
+                        try? store.updateRemoteMedia(baseName: session.baseName, manifest: manifest)
+                    },
                     progress: progress
                 )
-                await progress(.savingResult(fileName: "\(session.baseName)_protocol_\(agent.id).txt"))
-                let outputURL = try self.sessionStore.saveReportText(result.text, baseName: session.baseName, agentID: agent.id)
+                await progress(.savingResult(fileName: "\(session.baseName)_protocol_\(agent.id)_\(reportID).txt"))
+                let outputURL = try self.sessionStore.saveReportText(
+                    result.text,
+                    baseName: session.baseName,
+                    agentID: agent.id,
+                    reportID: reportID
+                )
                 var metadata = result.metadata
                 metadata.outputFileName = outputURL.lastPathComponent
                 metadata.createdAt = processingStartedAt
 
                 let report = ReportInfo(
+                    id: reportID,
                     agentID: agent.id,
                     agentName: metadata.agentName,
                     model: metadata.model,
+                    modelVersion: metadata.modelVersion,
+                    providerID: AIProviderID.gemini.rawValue,
+                    promptSnapshot: agent.prompt,
                     createdAt: metadata.createdAt,
                     processingDurationSeconds: metadata.durationSeconds,
                     tokens: ReportTokens(input: metadata.tokensInput, output: metadata.tokensOutput, total: metadata.tokensTotal),
@@ -659,15 +853,21 @@ public final class AppViewModel {
                 self.saveConfig()
                 self.refreshSessions()
                 self.selectedSessionID = session.id
-                self.selectedTabID = "report:\(agent.id)"
+                self.selectedReportID = reportID
+                self.selectedTabID = "reports"
+                self.synchronizeSelectedReport()
+                await self.refreshGeminiUsage()
                 self.statusMessage = "Протокол сохранен: \(metadata.outputFileName)"
                 AppLog.info("AI processing completed session=\(session.baseName) tokens=\(metadata.tokensTotal)", category: .ai)
             } catch is CancellationError {
                 self.statusMessage = "AI processing cancelled"
                 let report = ReportInfo(
+                    id: reportID,
                     agentID: agent.id,
                     agentName: agent.name,
                     model: snapshotConfig.modelName,
+                    providerID: AIProviderID.gemini.rawValue,
+                    promptSnapshot: agent.prompt,
                     createdAt: processingStartedAt,
                     processingDurationSeconds: Int(Date().timeIntervalSince(processingStartDate)),
                     tokens: ReportTokens(input: 0, output: 0, total: 0),
@@ -679,9 +879,12 @@ public final class AppViewModel {
             } catch {
                 let safeMessage = self.masked(error.localizedDescription, config: snapshotConfig)
                 let report = ReportInfo(
+                    id: reportID,
                     agentID: agent.id,
                     agentName: agent.name,
                     model: snapshotConfig.modelName,
+                    providerID: AIProviderID.gemini.rawValue,
+                    promptSnapshot: agent.prompt,
                     createdAt: processingStartedAt,
                     processingDurationSeconds: Int(Date().timeIntervalSince(processingStartDate)),
                     tokens: ReportTokens(input: 0, output: 0, total: 0),
@@ -712,6 +915,12 @@ public final class AppViewModel {
         return (try? sessionStore.loadReportText(url: url)) ?? ""
     }
 
+    public func loadReportText(reportID: String) -> String {
+        guard let session = selectedSession else { return "" }
+        guard let url = session.reportURLsByReportID[reportID] else { return "" }
+        return (try? sessionStore.loadReportText(url: url)) ?? ""
+    }
+
     public func copyReport(agentID: String) {
         let text = loadReportText(agentID: agentID)
         NSPasteboard.general.clearContents()
@@ -720,13 +929,227 @@ public final class AppViewModel {
         AppLog.info("Copied report for agent=\(agentID)", category: .ui)
     }
 
+    public func copySelectedReport() {
+        guard let selectedReportID else { return }
+        let text = loadReportText(reportID: selectedReportID)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        statusMessage = "Copied"
+    }
+
+    @discardableResult
+    public func saveSelectedReport(_ text: String) -> Bool {
+        guard let session = selectedSession,
+              let reportID = selectedReportID,
+              let url = session.reportURLsByReportID[reportID] else {
+            errorMessage = "Не удалось найти файл выбранного протокола."
+            return false
+        }
+
+        do {
+            try sessionStore.overwriteReportText(text, url: url)
+            statusMessage = "Протокол сохранён"
+            AppLog.info("Updated report id=\(reportID)", category: .ui)
+            return true
+        } catch {
+            errorMessage = "Не удалось сохранить протокол: \(error.localizedDescription)"
+            AppLog.error("Report update failed: \(error.localizedDescription)", category: .sessions)
+            return false
+        }
+    }
+
+    public func sendChatMessage(_ rawQuestion: String) {
+        let question = rawQuestion.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !question.isEmpty,
+              !isSendingChatMessage,
+              let session = selectedSession,
+              let report = selectedReport else { return }
+        if let blockedUntil = geminiRetryBlockedUntil {
+            errorMessage = "Gemini quota is temporarily exhausted. Retry after \(blockedUntil.formatted(date: .omitted, time: .standard))."
+            return
+        }
+        var snapshotConfig = config
+        snapshotConfig.aiProvider = .gemini
+        let normalizedReportModel = AIModelCatalog.normalizedModelID(report.model)
+        snapshotConfig.modelName = AIModelCatalog.model(providerID: .gemini, modelID: normalizedReportModel) == nil
+            ? AIModelCatalog.defaultModelID(for: .gemini)
+            : normalizedReportModel
+        let previousThread = chatThread ?? sessionStore.loadChat(
+            baseName: session.baseName,
+            reportID: report.id,
+            modelAlias: snapshotConfig.modelName
+        )
+        let userMessage = ChatMessage(role: .user, text: question, status: .sending)
+        var visibleThread = previousThread
+        visibleThread.messages.append(userMessage)
+        visibleThread.updatedAt = Date()
+        chatThread = visibleThread
+        try? sessionStore.saveChat(visibleThread, baseName: session.baseName)
+        isSendingChatMessage = true
+        errorMessage = nil
+
+        let progress: AIProgressHandler = { [weak self] phase in
+            await MainActor.run {
+                guard let self else { return }
+                self.statusMessage = phase.statusMessage
+                if case let .uploadingMedia(_, _, fileIndex, totalFiles, _) = phase {
+                    self.remoteMediaAvailability = .uploading(current: fileIndex, total: totalFiles)
+                }
+            }
+        }
+        chatTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await self.aiClient.sendChatMessage(
+                    request: GeminiChatRequest(
+                        videoURL: session.videoURL,
+                        audioURLs: session.audioURLs,
+                        report: report,
+                        reportText: self.loadReportText(reportID: report.id),
+                        thread: previousThread,
+                        question: question,
+                        config: snapshotConfig,
+                        existingRemoteMedia: session.metadata.remoteMedia
+                    ),
+                    remoteMediaUpdate: { manifest in
+                        let store = SessionStore(saveDirectory: session.baseURL.deletingLastPathComponent())
+                        try? store.updateRemoteMedia(baseName: session.baseName, manifest: manifest)
+                    },
+                    progress: progress
+                )
+                var completed = self.chatThread ?? visibleThread
+                if let index = completed.messages.firstIndex(where: { $0.id == userMessage.id }) {
+                    completed.messages[index].status = .sent
+                }
+                completed.messages.append(
+                    ChatMessage(role: .model, text: result.text, status: .sent, tokens: result.tokens)
+                )
+                completed.historySummary = result.historySummary
+                completed.summarizedMessageCount = result.summarizedMessageCount
+                completed.updatedAt = Date()
+                self.chatThread = completed
+                try self.sessionStore.saveChat(completed, baseName: session.baseName)
+                self.config.usedTokens += result.tokens.total
+                self.config.lastRequestTokens = result.tokens.total
+                self.saveConfig()
+                self.refreshSessions()
+                self.selectedSessionID = session.id
+                self.selectedReportID = report.id
+                self.synchronizeSelectedReport()
+                await self.refreshGeminiUsage()
+                self.statusMessage = "Chat response received"
+            } catch is CancellationError {
+                self.statusMessage = "Chat request cancelled"
+                var cancelled = self.chatThread ?? visibleThread
+                if let index = cancelled.messages.firstIndex(where: { $0.id == userMessage.id }) {
+                    cancelled.messages[index].status = .failed
+                    cancelled.messages[index].error = "Запрос отменен"
+                }
+                self.chatThread = cancelled
+                try? self.sessionStore.saveChat(cancelled, baseName: session.baseName)
+            } catch {
+                var failed = self.chatThread ?? visibleThread
+                if let index = failed.messages.firstIndex(where: { $0.id == userMessage.id }) {
+                    failed.messages[index].status = .failed
+                    failed.messages[index].error = self.masked(error.localizedDescription, config: snapshotConfig)
+                }
+                self.chatThread = failed
+                try? self.sessionStore.saveChat(failed, baseName: session.baseName)
+                self.refreshSessions()
+                self.selectedSessionID = session.id
+                self.selectedReportID = report.id
+                self.synchronizeSelectedReport()
+                self.updateRemoteMediaAvailability()
+                if case .notUploaded = self.remoteMediaAvailability {
+                    self.remoteMediaAvailability = .failed(self.masked(error.localizedDescription, config: snapshotConfig))
+                }
+                self.errorMessage = "Chat error: \(self.masked(error.localizedDescription, config: snapshotConfig))"
+                await self.refreshGeminiUsage()
+            }
+            self.isSendingChatMessage = false
+        }
+    }
+
+    public func cancelChatMessage() {
+        chatTask?.cancel()
+        chatTask = nil
+        isSendingChatMessage = false
+    }
+
+    public func retryChatMessage(id: String) {
+        guard var thread = chatThread,
+              let index = thread.messages.firstIndex(where: { $0.id == id && $0.role == .user }) else { return }
+        let text = thread.messages[index].text
+        thread.messages.remove(at: index)
+        chatThread = thread
+        if let session = selectedSession {
+            try? sessionStore.saveChat(thread, baseName: session.baseName)
+        }
+        sendChatMessage(text)
+    }
+
     public func openOutputFolder() {
         NSWorkspace.shared.open(URL(fileURLWithPath: config.saveDirectory))
         AppLog.info("Opened output folder", category: .ui)
     }
 
+    public func refreshGeminiUsage() async {
+        geminiUsageSnapshot = await aiClient.usageSnapshot(apiKey: config.apiKey)
+    }
+
+    private func processRemoteCleanupQueue() async {
+        try? await remoteCleanupStore.discardExpired()
+        let entries = await remoteCleanupStore.pending(config: config)
+        for entry in entries {
+            guard await aiClient.deleteRemoteMedia(entry.manifest, config: config) else { continue }
+            try? await remoteCleanupStore.markCompleted(id: entry.id)
+        }
+    }
+
+    private func synchronizeSelectedReport() {
+        guard let session = selectedSession else {
+            selectedReportID = nil
+            chatThread = nil
+            return
+        }
+        let reports = session.availableReports
+        if selectedReportID == nil || !reports.contains(where: { $0.id == selectedReportID }) {
+            selectedReportID = reports.first?.id
+        }
+        guard let report = selectedReport else {
+            chatThread = nil
+            return
+        }
+        if chatThread?.reportID != report.id {
+            chatThread = sessionStore.loadChat(
+                baseName: session.baseName,
+                reportID: report.id,
+                modelAlias: chatModelAlias(for: report)
+            )
+        }
+    }
+
+    private func chatModelAlias(for report: ReportInfo) -> String {
+        let normalized = AIModelCatalog.normalizedModelID(report.model)
+        return AIModelCatalog.model(providerID: .gemini, modelID: normalized) == nil
+            ? AIModelCatalog.defaultModelID(for: .gemini)
+            : normalized
+    }
+
+    private func updateRemoteMediaAvailability(now: Date = Date()) {
+        guard let manifest = selectedSession?.metadata.remoteMedia,
+              manifest.isComplete,
+              let expiration = manifest.earliestExpiration else {
+            remoteMediaAvailability = .notUploaded
+            return
+        }
+        remoteMediaAvailability = expiration.timeIntervalSince(now) > 300
+            ? .available(until: expiration)
+            : .expired
+    }
+
     private func normalizeConfig() {
-        if AIProviderID(rawValue: config.aiProviderID) == nil {
+        if AIProviderID(rawValue: config.aiProviderID) == nil || !ProviderAvailability.isActive(config.aiProvider) {
             config.aiProvider = .gemini
         }
         config.modelName = AIModelCatalog.normalizedModelID(config.modelName)
@@ -772,6 +1195,15 @@ public final class AppViewModel {
         }
     }
 
+    private func persistAudioCaptureState() {
+        do {
+            try configStore.save(config)
+            statusMessage = "Audio sources updated"
+        } catch {
+            errorMessage = "Audio source setting failed: \(error.localizedDescription)"
+        }
+    }
+
     private func startRecordingTimer() {
         recordingTimerTask?.cancel()
         recordingTimerTask = Task { [weak self] in
@@ -797,16 +1229,22 @@ public final class AppViewModel {
         case let .didFail(message):
             errorMessage = "Recording failed: \(message)"
             isRecording = false
-            isFinalizingRecording = false
+            isFinalizingRecording = true
             recordingTimerTask?.cancel()
             recordingTimerTask = nil
-            if let baseName = currentRecordingBaseName {
-                try? sessionStore.deleteArtifacts(baseName: baseName)
+            let failedRecorder = recorder
+            Task { [weak self] in
+                do {
+                    try await failedRecorder?.stop()
+                } catch {
+                    self?.errorMessage = error.localizedDescription
+                }
+                self?.recorder = nil
+                self?.isFinalizingRecording = false
+                self?.currentRecordingBaseName = nil
+                self?.currentRecordingURL = nil
+                self?.refreshSessions()
             }
-            recorder = nil
-            currentRecordingBaseName = nil
-            currentRecordingURL = nil
-            refreshSessions()
             AppLog.error("Recorder event didFail: \(message)", category: .recording)
         }
     }
@@ -830,6 +1268,23 @@ public final class AppViewModel {
             try? await Task.sleep(for: .milliseconds(200))
         }
         return false
+    }
+
+    private func uniqueRecordingIdentity(in directory: URL) -> (baseName: String, timestamp: String) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "dd.MM.yyyy_HH:mm:ss"
+        var date = Date()
+        while true {
+            let timestamp = formatter.string(from: date)
+            let baseName = "Meet_\(timestamp)"
+            let videoURL = directory.appending(path: "\(baseName).mp4")
+            let metadataURL = directory.appending(path: "\(baseName).json")
+            if !FileManager.default.fileExists(atPath: videoURL.path),
+               !FileManager.default.fileExists(atPath: metadataURL.path) {
+                return (baseName, timestamp)
+            }
+            date.addTimeInterval(1)
+        }
     }
 
     private func masked(_ message: String, config: AppConfig) -> String {

@@ -65,6 +65,9 @@ public struct AppConfig: Codable, Hashable, Sendable {
     public var saveDirectory: String
     public var videoQuality: String
     public var showRecordingTime: Bool
+    public var microphoneEnabled: Bool
+    public var systemAudioEnabled: Bool
+    public var splitLargeMediaEnabled: Bool
     public var usedTokens: Int
     public var lastRequestTokens: Int
     public var activeAgentID: String
@@ -90,6 +93,9 @@ public struct AppConfig: Codable, Hashable, Sendable {
         case saveDirectory = "save_dir"
         case videoQuality = "video_quality"
         case showRecordingTime = "show_recording_time"
+        case microphoneEnabled = "microphone_enabled"
+        case systemAudioEnabled = "system_audio_enabled"
+        case splitLargeMediaEnabled = "split_large_media_enabled"
         case usedTokens = "used_tokens"
         case lastRequestTokens = "last_request_tokens"
         case activeAgentID = "active_agent_id"
@@ -116,6 +122,9 @@ public struct AppConfig: Codable, Hashable, Sendable {
         saveDirectory: String,
         videoQuality: String,
         showRecordingTime: Bool,
+        microphoneEnabled: Bool = true,
+        systemAudioEnabled: Bool = true,
+        splitLargeMediaEnabled: Bool = false,
         usedTokens: Int,
         lastRequestTokens: Int,
         activeAgentID: String,
@@ -140,6 +149,9 @@ public struct AppConfig: Codable, Hashable, Sendable {
         self.saveDirectory = saveDirectory
         self.videoQuality = videoQuality
         self.showRecordingTime = showRecordingTime
+        self.microphoneEnabled = microphoneEnabled
+        self.systemAudioEnabled = systemAudioEnabled
+        self.splitLargeMediaEnabled = splitLargeMediaEnabled
         self.usedTokens = usedTokens
         self.lastRequestTokens = lastRequestTokens
         self.activeAgentID = activeAgentID
@@ -168,6 +180,9 @@ public struct AppConfig: Codable, Hashable, Sendable {
         saveDirectory = try container.decodeIfPresent(String.self, forKey: .saveDirectory) ?? defaults.saveDirectory
         videoQuality = try container.decodeIfPresent(String.self, forKey: .videoQuality) ?? defaults.videoQuality
         showRecordingTime = try container.decodeIfPresent(Bool.self, forKey: .showRecordingTime) ?? defaults.showRecordingTime
+        microphoneEnabled = try container.decodeIfPresent(Bool.self, forKey: .microphoneEnabled) ?? defaults.microphoneEnabled
+        systemAudioEnabled = try container.decodeIfPresent(Bool.self, forKey: .systemAudioEnabled) ?? defaults.systemAudioEnabled
+        splitLargeMediaEnabled = try container.decodeIfPresent(Bool.self, forKey: .splitLargeMediaEnabled) ?? defaults.splitLargeMediaEnabled
         usedTokens = try container.decodeIfPresent(Int.self, forKey: .usedTokens) ?? defaults.usedTokens
         lastRequestTokens = try container.decodeIfPresent(Int.self, forKey: .lastRequestTokens) ?? defaults.lastRequestTokens
         activeAgentID = try container.decodeIfPresent(String.self, forKey: .activeAgentID) ?? defaults.activeAgentID
@@ -420,10 +435,13 @@ public extension AppConfig {
         awsRegion: "us-east-1",
         videoDeviceIndex: "0",
         videoDeviceName: "Main Screen",
-        modelName: "gemini-3-flash-preview",
+        modelName: "gemini-flash-lite-latest",
         saveDirectory: UserPaths.defaultSaveDirectory.path,
         videoQuality: "Medium",
         showRecordingTime: true,
+        microphoneEnabled: true,
+        systemAudioEnabled: true,
+        splitLargeMediaEnabled: false,
         usedTokens: 0,
         lastRequestTokens: 0,
         activeAgentID: "default",

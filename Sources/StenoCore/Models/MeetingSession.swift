@@ -47,10 +47,13 @@ public struct ReportTokens: Codable, Hashable, Sendable {
 }
 
 public struct ReportInfo: Codable, Identifiable, Hashable, Sendable {
-    public var id: String { "\(agentID)-\(createdAt)-\(outputPath)" }
+    public var id: String
     public var agentID: String
     public var agentName: String
     public var model: String
+    public var modelVersion: String?
+    public var providerID: String?
+    public var promptSnapshot: String?
     public var createdAt: String
     public var processingDurationSeconds: Int
     public var tokens: ReportTokens
@@ -59,9 +62,13 @@ public struct ReportInfo: Codable, Identifiable, Hashable, Sendable {
     public var error: String?
 
     enum CodingKeys: String, CodingKey {
+        case id
         case agentID = "agent_id"
         case agentName = "agent_name"
         case model
+        case modelVersion = "model_version"
+        case providerID = "provider_id"
+        case promptSnapshot = "prompt_snapshot"
         case createdAt = "created_at"
         case processingDurationSeconds = "processing_duration_seconds"
         case tokens
@@ -71,9 +78,13 @@ public struct ReportInfo: Codable, Identifiable, Hashable, Sendable {
     }
 
     public init(
+        id: String = UUID().uuidString,
         agentID: String,
         agentName: String,
         model: String,
+        modelVersion: String? = nil,
+        providerID: String? = nil,
+        promptSnapshot: String? = nil,
         createdAt: String,
         processingDurationSeconds: Int,
         tokens: ReportTokens,
@@ -81,9 +92,13 @@ public struct ReportInfo: Codable, Identifiable, Hashable, Sendable {
         status: String,
         error: String? = nil
     ) {
+        self.id = id
         self.agentID = agentID
         self.agentName = agentName
         self.model = model
+        self.modelVersion = modelVersion
+        self.providerID = providerID
+        self.promptSnapshot = promptSnapshot
         self.createdAt = createdAt
         self.processingDurationSeconds = processingDurationSeconds
         self.tokens = tokens
@@ -91,31 +106,76 @@ public struct ReportInfo: Codable, Identifiable, Hashable, Sendable {
         self.status = status
         self.error = error
     }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        agentID = try container.decode(String.self, forKey: .agentID)
+        agentName = try container.decodeIfPresent(String.self, forKey: .agentName) ?? agentID
+        model = try container.decodeIfPresent(String.self, forKey: .model) ?? AIModelCatalog.defaultModelID(for: .gemini)
+        modelVersion = try container.decodeIfPresent(String.self, forKey: .modelVersion)
+        providerID = try container.decodeIfPresent(String.self, forKey: .providerID)
+        promptSnapshot = try container.decodeIfPresent(String.self, forKey: .promptSnapshot)
+        createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
+        processingDurationSeconds = try container.decodeIfPresent(Int.self, forKey: .processingDurationSeconds) ?? 0
+        tokens = try container.decodeIfPresent(ReportTokens.self, forKey: .tokens) ?? ReportTokens(input: 0, output: 0, total: 0)
+        outputPath = try container.decodeIfPresent(String.self, forKey: .outputPath) ?? ""
+        status = try container.decodeIfPresent(String.self, forKey: .status) ?? "unknown"
+        error = try container.decodeIfPresent(String.self, forKey: .error)
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? Self.legacyID(
+            agentID: agentID,
+            createdAt: createdAt,
+            outputPath: outputPath
+        )
+    }
+
+    private static func legacyID(agentID: String, createdAt: String, outputPath: String) -> String {
+        let value = "\(agentID)|\(createdAt)|\(outputPath)"
+        let hash = value.utf8.reduce(UInt64(14_695_981_039_346_656_037)) { partial, byte in
+            (partial ^ UInt64(byte)) &* 1_099_511_628_211
+        }
+        return "legacy-\(String(hash, radix: 16))"
+    }
 }
 
 public struct SessionMetadata: Codable, Hashable, Sendable {
+    public var schemaVersion: Int?
     public var name: String?
     public var createdAt: String?
+    public var folderID: String?
+    public var source: RecordingSource?
     public var recording: RecordingInfo?
     public var reports: [ReportInfo]?
+    public var remoteMedia: RemoteMediaManifest?
 
     enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
         case name
         case createdAt = "created_at"
+        case folderID = "folder_id"
+        case source
         case recording
         case reports
+        case remoteMedia = "remote_media"
     }
 
     public init(
+        schemaVersion: Int? = 2,
         name: String? = nil,
         createdAt: String? = nil,
+        folderID: String? = nil,
+        source: RecordingSource? = nil,
         recording: RecordingInfo? = nil,
-        reports: [ReportInfo]? = nil
+        reports: [ReportInfo]? = nil,
+        remoteMedia: RemoteMediaManifest? = nil
     ) {
+        self.schemaVersion = schemaVersion
         self.name = name
         self.createdAt = createdAt
+        self.folderID = folderID
+        self.source = source
         self.recording = recording
         self.reports = reports
+        self.remoteMedia = remoteMedia
     }
 }
 
@@ -127,6 +187,7 @@ public struct MeetingSession: Identifiable, Hashable, Sendable {
     public var metadataURL: URL
     public var audioURLs: [URL]
     public var reportURLsByAgentID: [String: URL]
+    public var reportURLsByReportID: [String: URL]
     public var metadata: SessionMetadata
     public var modifiedAt: Date
 
@@ -137,6 +198,7 @@ public struct MeetingSession: Identifiable, Hashable, Sendable {
         metadataURL: URL,
         audioURLs: [URL],
         reportURLsByAgentID: [String: URL],
+        reportURLsByReportID: [String: URL] = [:],
         metadata: SessionMetadata,
         modifiedAt: Date
     ) {
@@ -146,6 +208,7 @@ public struct MeetingSession: Identifiable, Hashable, Sendable {
         self.metadataURL = metadataURL
         self.audioURLs = audioURLs
         self.reportURLsByAgentID = reportURLsByAgentID
+        self.reportURLsByReportID = reportURLsByReportID
         self.metadata = metadata
         self.modifiedAt = modifiedAt
     }
@@ -178,5 +241,11 @@ public extension MeetingSession {
 
     var sortedReportAgentIDs: [String] {
         reportURLsByAgentID.keys.sorted()
+    }
+
+    var availableReports: [ReportInfo] {
+        (metadata.reports ?? [])
+            .filter { reportURLsByReportID[$0.id] != nil }
+            .sorted { $0.createdAt > $1.createdAt }
     }
 }
